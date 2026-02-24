@@ -1,0 +1,800 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>WA Bulk AI</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+<div class="app">
+
+  <!-- ── Header ───────────────────────────────────────────────── -->
+  <div class="header">
+    <div class="logo">
+      <span class="logo-icon">🤖</span>
+      <div>
+        <div class="logo-name">WA Bulk AI</div>
+        <div class="logo-sub">AI WhatsApp Messenger</div>
+      </div>
+    </div>
+    <div class="header-right">
+      <button class="privacy-btn" id="privacyBtn" title="Toggle Privacy Mode">👁️</button>
+      <div class="status-pill" id="statusPill">● Idle</div>
+    </div>
+  </div>
+
+  <!-- ── Privacy Overlay ──────────────────────────────────────── -->
+  <div class="privacy-overlay" id="privacyOverlay" style="display:none">
+    <div class="privacy-lock-icon">🔒</div>
+    <div class="privacy-lock-text">Privacy Mode On</div>
+    <div class="privacy-lock-sub">Data is hidden. Click the 👁️ button to reveal.</div>
+  </div>
+
+  <!-- ── Privacy Strip ───────────────────────────────────────── -->
+  <div class="privacy-strip" id="privacyStrip">🔒 PRIVACY MODE — Data blurred. Hover items to peek.</div>
+
+  <!-- ── Tab Bar ──────────────────────────────────────────────── -->
+  <div class="tab-bar">
+    <button class="tab active" data-tab="contacts">📋 Contacts</button>
+    <button class="tab" data-tab="pipeline">🎯 Pipeline</button>
+    <button class="tab" data-tab="compose">✍️ Compose</button>
+    <button class="tab" data-tab="sender">⚡ Sender</button>
+    <button class="tab" data-tab="drip">📩 Drip</button>
+    <button class="tab" data-tab="auto">🤖 Auto Reply</button>
+    <button class="tab" data-tab="replies">💬 Replies</button>
+    <button class="tab" data-tab="analytics">📊 Stats</button>
+    <button class="tab" data-tab="dashboard">📋 Dashboard</button>
+    <button class="tab" data-tab="settings">⚙️ Settings</button>
+  </div>
+
+  <!-- ── Panels ───────────────────────────────────────────────── -->
+  <div class="panels">
+
+    <!-- ════════════════════════════════════════════════
+         CONTACTS TAB
+         ════════════════════════════════════════════════ -->
+    <div class="panel active" id="panel-contacts">
+
+      <div class="upload-box" id="uploadBox">
+        <div class="upload-icon">📂</div>
+        <div class="upload-title">Drop CSV file here</div>
+        <div class="upload-hint">Columns: <code>phone</code>, <code>name</code>, any custom fields</div>
+        <input type="file" id="csvFile" accept=".csv" hidden>
+        <button class="btn btn-outline btn-sm" id="chooseFileBtn">Choose File</button>
+      </div>
+
+      <div class="or-divider"><span>or add manually</span></div>
+
+      <div class="row gap-6 mb-10">
+        <input type="text" id="manualName"  placeholder="Name" class="input">
+        <input type="text" id="manualPhone" placeholder="Phone with country code" class="input" style="flex:1.8">
+        <button class="btn btn-green btn-sm" id="addBtn">Add</button>
+      </div>
+
+      <!-- ── Segments ──────────────────────────────────────────── -->
+      <div class="section-badge mb-6">🗂️ Segments</div>
+
+      <div class="card mb-8">
+        <div class="row gap-6 mb-6">
+          <input type="text" id="seg-name" class="input" placeholder="Segment name e.g. Hot Leads" style="flex:1">
+          <button class="btn btn-outline btn-sm" id="seg-saveBtn">Save</button>
+        </div>
+        <div class="row gap-8 mb-4">
+          <div style="flex:1">
+            <div class="label-sm mb-4">Stage</div>
+            <select id="seg-stages" class="input" multiple size="3">
+              <option value="new">🔵 New</option>
+              <option value="contacted">🟡 Contacted</option>
+              <option value="interested">🟠 Interested</option>
+              <option value="converted">🟢 Converted</option>
+              <option value="lost">⚫ Lost</option>
+            </select>
+          </div>
+          <div style="flex:1">
+            <div class="label-sm mb-4">Status</div>
+            <select id="seg-statuses" class="input" multiple size="3">
+              <option value="pending">Pending</option>
+              <option value="sent">Sent</option>
+              <option value="failed">Failed</option>
+            </select>
+          </div>
+        </div>
+        <div class="hint">Hold Ctrl/Cmd to select multiple. Leave empty = match all.</div>
+      </div>
+
+      <div id="seg-list" class="row gap-6 mb-8" style="flex-wrap:wrap">
+        <div class="muted-text" style="font-size:11px">No segments yet.</div>
+      </div>
+
+      <div class="row justify-between mb-6">
+        <span class="muted-text" id="contactCount">0 contacts</span>
+        <div class="row gap-6">
+          <button class="btn btn-outline btn-sm" id="seg-clearFilterBtn" style="display:none">✕ Clear Filter</button>
+          <button class="btn btn-outline btn-sm" id="scoreAllBtn">🏆 Score All</button>
+          <button class="btn btn-danger btn-sm" id="clearBtn">Clear All</button>
+        </div>
+      </div>
+
+      <div class="card-list" id="contactList">
+        <div class="empty-state">No contacts yet.<br>Upload a CSV or add one manually.</div>
+      </div>
+
+      <div class="divider-line mt-14 mb-12"></div>
+
+      <!-- ── Google Sheets Import ───────────────────────────── -->
+      <div class="section-badge">📊 Google Sheets Import</div>
+      <p class="hint mb-8">Import contacts from a public Google Sheet — no CSV download needed.</p>
+
+      <input type="text" id="sheets-url" class="input mb-6" placeholder="https://docs.google.com/spreadsheets/d/...">
+      <div class="row gap-6 mb-6">
+        <button class="btn btn-green btn-sm" id="sheets-importBtn" style="flex:1">📥 Import from Sheets</button>
+        <button class="btn btn-outline btn-sm" id="sheets-resyncBtn">↻ Re-sync</button>
+      </div>
+      <div id="sheets-result" class="result-msg" style="display:none"></div>
+      <div class="hint mt-6">Sheet must be shared: <strong style="color:#c9d1d9">Anyone with link → Viewer</strong></div>
+    </div>
+
+    <!-- ════════════════════════════════════════════════
+         PIPELINE TAB
+         ════════════════════════════════════════════════ -->
+    <div class="panel" id="panel-pipeline">
+
+      <!-- Summary boxes -->
+      <div class="pipeline-summary" id="pipelineSummary">
+        <div class="ps-box ps-new"    data-pf="new">       <div class="ps-num" id="ps-new">0</div>       <div class="ps-label">New</div></div>
+        <div class="ps-box ps-contacted" data-pf="contacted"><div class="ps-num" id="ps-contacted">0</div><div class="ps-label">Contacted</div></div>
+        <div class="ps-box ps-interested" data-pf="interested"><div class="ps-num" id="ps-interested">0</div><div class="ps-label">Interest</div></div>
+        <div class="ps-box ps-converted" data-pf="converted"><div class="ps-num" id="ps-converted">0</div><div class="ps-label">Converted</div></div>
+        <div class="ps-box ps-lost"    data-pf="lost">      <div class="ps-num" id="ps-lost">0</div>      <div class="ps-label">Lost</div></div>
+      </div>
+
+      <!-- Stage filter buttons -->
+      <div class="stage-filter-row" id="stageFilterRow">
+        <button class="sfbtn sf-active" data-sf="all">All</button>
+        <button class="sfbtn sf-new"        data-sf="new">🔵 New</button>
+        <button class="sfbtn sf-contacted"  data-sf="contacted">🟡 Contacted</button>
+        <button class="sfbtn sf-interested" data-sf="interested">🟠 Interested</button>
+        <button class="sfbtn sf-converted"  data-sf="converted">🟢 Converted</button>
+        <button class="sfbtn sf-lost"       data-sf="lost">⚫ Lost</button>
+      </div>
+
+      <!-- Follow-up due today banner -->
+      <div id="fuDueBanner" style="display:none" class="warn-box mb-10">⏰ <span id="fuDueCount">0</span> contact(s) have a follow-up due today!</div>
+
+      <!-- Pipeline contact list -->
+      <div id="pipelineList">
+        <div class="empty-state">No contacts yet. Add contacts in the Contacts tab.</div>
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════════
+         COMPOSE TAB
+         ════════════════════════════════════════════════ -->
+    <div class="panel" id="panel-compose">
+
+      <!-- Campaign Name -->
+      <div class="form-group">
+        <label class="label">Campaign Name <span style="font-weight:400;text-transform:none">(optional)</span></label>
+        <input type="text" id="campaignName" class="input" placeholder="e.g. June Promo, Cold Outreach Wave 1">
+      </div>
+
+      <!-- Message Template -->
+      <div class="form-group">
+        <label class="label">Message Template A</label>
+        <div class="hint mb-6">Variables: <code>{name}</code> <code>{phone}</code> <code>{company}</code> or any CSV column</div>
+        <textarea id="msgTemplate" class="textarea" rows="6" placeholder="Hi {name}! I wanted to reach out about..."></textarea>
+        <div class="row justify-between mt-4">
+          <span class="muted-text" id="charCount">0 chars</span>
+          <span class="muted-text" id="waLimit"></span>
+        </div>
+      </div>
+
+      <!-- A/B Testing -->
+      <div class="card mb-10">
+        <div class="row justify-between align-center">
+          <div>
+            <div class="section-title">🧪 A/B Testing</div>
+            <div class="hint mt-2">Send 2 variants, see which performs better</div>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="abEnabled">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div id="abPanel" style="display:none" class="mt-10">
+          <label class="label">Message Template B</label>
+          <textarea id="msgTemplateB" class="textarea" rows="5" placeholder="Alternative message for B group..."></textarea>
+        </div>
+      </div>
+
+      <!-- AI Personalization -->
+      <div class="card mb-10">
+        <div class="row justify-between align-center">
+          <div>
+            <div class="section-title">🤖 AI Personalization</div>
+            <div class="hint mt-2">Claude rewrites each message uniquely</div>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="aiEnabled">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="ai-status" id="aiStatus"></div>
+      </div>
+
+      <!-- Delay -->
+      <div class="form-group">
+        <label class="label">Delay Between Messages</label>
+        <div class="row gap-10 mb-6">
+          <div style="flex:1"><div class="label-sm">Min (sec)</div><input type="number" id="minDelay" value="15" min="5" max="300" class="input"></div>
+          <div style="flex:1"><div class="label-sm">Max (sec)</div><input type="number" id="maxDelay" value="45" min="10" max="600" class="input"></div>
+        </div>
+        <div class="warn-box">⚠️ Keep 15–45s minimum to avoid WhatsApp bans</div>
+      </div>
+
+      <!-- Schedule Campaign -->
+      <div class="form-group">
+        <label class="label">📅 Schedule Campaign (optional)</label>
+        <input type="datetime-local" id="scheduleTime" class="input mb-6">
+        <div class="row gap-6 mb-6">
+          <button class="btn btn-outline" id="scheduleBtn" style="flex:1">🗓 Schedule Campaign</button>
+          <button class="btn btn-outline btn-sm" id="smartScheduleBtn" title="Auto-detect best send time from reply history">🧠 Smart Schedule</button>
+        </div>
+        <div id="scheduleResult" class="result-msg mt-6" style="display:none"></div>
+      </div>
+
+      <!-- Preview -->
+      <div class="form-group">
+        <label class="label">Preview</label>
+        <select id="previewPicker" class="input mb-6"><option value="">Select contact for preview...</option></select>
+        <div class="preview-bubble" id="previewBubble">Write a template and select a contact to preview.</div>
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════════
+         QUICK SENDER TAB (WA Sender)
+         ════════════════════════════════════════════════ -->
+    <div class="panel" id="panel-sender">
+
+      <div class="section-badge">⚡ Quick WA Sender</div>
+      <p class="hint mb-12">Send a message to any WhatsApp number instantly — no campaign needed.</p>
+
+      <div class="form-group">
+        <label class="label">Phone Number</label>
+        <input type="text" id="qs-phone" placeholder="Country code + number e.g. 911234567890" class="input">
+        <div class="hint mt-4">Include country code, no spaces or dashes</div>
+      </div>
+
+      <div class="form-group">
+        <label class="label">Message</label>
+        <textarea id="qs-message" class="textarea" rows="6" placeholder="Type your message here..."></textarea>
+        <div class="row justify-between mt-4">
+          <span class="muted-text" id="qs-charcount">0 chars</span>
+        </div>
+      </div>
+
+      <!-- AI rewrite for quick send -->
+      <div class="card mb-10">
+        <div class="row gap-8 align-center">
+          <label class="toggle">
+            <input type="checkbox" id="qs-aiEnabled">
+            <span class="slider"></span>
+          </label>
+          <div>
+            <div class="section-title">🤖 AI Rewrite Before Sending</div>
+            <div class="hint">Claude will improve the message first</div>
+          </div>
+        </div>
+      </div>
+
+      <button class="btn btn-green" style="width:100%" id="qs-sendBtn">⚡ Send Now</button>
+      <div id="qs-result" class="result-msg mt-8" style="display:none"></div>
+
+      <div class="divider-line mt-16 mb-12"></div>
+
+      <!-- Bulk number sender -->
+      <div class="section-badge">📋 Multi-Number Quick Blast</div>
+      <p class="hint mb-10">Send same message to multiple numbers at once (no CSV needed)</p>
+
+      <div class="form-group">
+        <label class="label">Phone Numbers</label>
+        <textarea id="qs-phones" class="textarea" rows="4" placeholder="One number per line:&#10;911234567890&#10;12125551234&#10;447700900123"></textarea>
+      </div>
+
+      <div class="form-group">
+        <label class="label">Message</label>
+        <textarea id="qs-blast-msg" class="textarea" rows="4" placeholder="Message to send to all numbers..."></textarea>
+      </div>
+
+      <button class="btn btn-outline" style="width:100%" id="qs-blastBtn">🚀 Send to All</button>
+      <div id="qs-blast-result" class="result-msg mt-8" style="display:none"></div>
+
+      <div class="divider-line mt-16 mb-12"></div>
+
+      <!-- ── Template Library ───────────────────────────────── -->
+      <div class="section-badge">📚 Template Library</div>
+      <p class="hint mb-10">Save messages once, send instantly — no retyping ever.</p>
+
+      <div class="card mb-10">
+        <div class="form-group">
+          <label class="label">Template Name</label>
+          <input type="text" id="tpl-name" placeholder="e.g. Intro Pitch, Price Quote, Follow-up #1" class="input">
+        </div>
+        <div class="form-group">
+          <label class="label">Message</label>
+          <textarea id="tpl-msg" class="textarea" rows="3" placeholder="Hi {name}, I wanted to reach out about..."></textarea>
+        </div>
+        <button class="btn btn-outline btn-sm" id="tpl-saveBtn">💾 Save Template</button>
+        <div id="tpl-saveResult" class="result-msg mt-6" style="display:none"></div>
+      </div>
+
+      <div id="tpl-list">
+        <div class="empty-state" style="border:1px solid #21262d;border-radius:8px">No templates yet.</div>
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════════
+         DRIP CAMPAIGNS TAB
+         ════════════════════════════════════════════════ -->
+    <div class="panel" id="panel-drip">
+
+      <div class="section-badge">📩 Drip Campaigns</div>
+      <p class="hint mb-12">Automate multi-step message sequences. Each step fires at its scheduled delay after enrollment.</p>
+
+      <!-- Sequence Builder -->
+      <div class="card mb-12">
+        <div class="section-title mb-8">✏️ Sequence Builder</div>
+
+        <div class="form-group">
+          <label class="label">Sequence Name</label>
+          <input type="text" id="drip-name" class="input" placeholder="e.g. New Lead Nurture, Cold Outreach">
+        </div>
+
+        <div id="drip-steps">
+          <!-- Steps injected here by JS -->
+        </div>
+
+        <button class="btn btn-outline btn-sm mt-6" id="drip-addStepBtn" style="width:100%">+ Add Step</button>
+
+        <div class="row gap-8 mt-8">
+          <button class="btn btn-green" style="flex:1" id="drip-saveSeqBtn">💾 Save Sequence</button>
+          <button class="btn btn-outline btn-sm" id="drip-clearBuilderBtn">✕ Clear</button>
+        </div>
+        <div id="drip-saveResult" class="result-msg mt-6" style="display:none"></div>
+      </div>
+
+      <!-- Saved Sequences -->
+      <div class="section-title mb-8">📋 Saved Sequences</div>
+      <div id="drip-seqList">
+        <div class="empty-state">No sequences yet. Build one above.</div>
+      </div>
+
+      <div class="divider-line mt-14 mb-12"></div>
+
+      <!-- Active Enrollments -->
+      <div class="row justify-between align-center mb-8">
+        <div class="section-title">⏱️ Active Enrollments</div>
+        <button class="btn btn-outline btn-sm" id="drip-refreshBtn">↻ Refresh</button>
+      </div>
+      <div id="drip-enrollList">
+        <div class="empty-state">No active enrollments.</div>
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════════
+         AUTO REPLY TAB
+         ════════════════════════════════════════════════ -->
+    <div class="panel" id="panel-auto">
+
+      <div class="section-badge">🤖 Auto Reply Bot</div>
+      <p class="hint mb-10">Automatically replies to incoming messages in the open WhatsApp chat.</p>
+
+      <!-- Master toggle card -->
+      <div class="card mb-10">
+        <div class="row justify-between align-center">
+          <div>
+            <div class="section-title">
+              <span class="pulse-dot" id="arPulseDot" style="display:none;margin-right:6px"></span>Auto Reply Bot
+            </div>
+            <div class="hint mt-2" id="arStatusText">Bot is off — activate to start</div>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="arToggle">
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Mode selector -->
+      <div class="mode-tabs">
+        <button class="mode-tab active" data-mode="template">📝 Template</button>
+        <button class="mode-tab" data-mode="ai">🤖 AI Reply</button>
+      </div>
+
+      <!-- Template mode -->
+      <div id="arTemplateMode" class="form-group">
+        <label class="label">Auto Reply Message</label>
+        <textarea id="arTemplate" class="textarea" rows="4" placeholder="Thanks for reaching out! I'll get back to you soon."></textarea>
+        <div class="hint mt-4">Sent as-is to every incoming message</div>
+      </div>
+
+      <!-- AI mode -->
+      <div id="arAIMode" class="form-group" style="display:none">
+        <label class="label">AI Persona / Instructions</label>
+        <textarea id="arPrompt" class="textarea" rows="4" placeholder="You are a helpful assistant. Reply naturally and briefly to the message below."></textarea>
+        <div class="hint mt-4">Claude generates a unique reply to each message. Needs API key.</div>
+      </div>
+
+      <!-- Delay slider -->
+      <div class="form-group">
+        <label class="label">Reply Delay: <span id="arDelayLabel">2s</span></label>
+        <input type="range" id="arDelay" min="1" max="15" value="2" class="range-input" style="width:100%">
+        <div class="hint mt-2">Human-like pause before sending the reply</div>
+      </div>
+
+      <!-- Keyword filter -->
+      <div class="form-group">
+        <label class="label">Keyword Filter <span style="font-weight:400;text-transform:none">(optional)</span></label>
+        <input type="text" id="arKeyword" placeholder="hi, hello, help  ← leave empty to reply to all" class="input">
+        <div class="hint mt-4">Comma-separated — only replies if message contains any keyword</div>
+      </div>
+
+      <button class="btn btn-green" style="width:100%;margin-bottom:8px" id="arStartBtn">▶ Start Bot</button>
+      <button class="btn btn-danger" style="width:100%;display:none;margin-bottom:8px" id="arStopBtn">⏹ Stop Bot</button>
+
+      <div class="warn-box">⚠️ Keep a WhatsApp Web chat open — bot monitors the active conversation</div>
+
+      <div class="divider-line mt-14 mb-10"></div>
+
+      <!-- Live reply log -->
+      <div class="row justify-between align-center mb-8">
+        <div class="section-title">📋 Reply Log</div>
+        <button class="btn btn-outline btn-sm" id="arClearLog">Clear</button>
+      </div>
+      <div id="arLog" class="ar-log">
+        <div class="empty-state">No auto-replies yet.</div>
+      </div>
+
+    </div>
+
+    <!-- ════════════════════════════════════════════════
+         REPLIES TAB (AI Reply Handler)
+         ════════════════════════════════════════════════ -->
+    <div class="panel" id="panel-replies">
+
+      <div class="row justify-between align-center mb-10">
+        <div>
+          <div class="section-badge">💬 AI Reply Handler</div>
+          <div class="hint mt-4">Scans sent contacts for replies & suggests AI responses</div>
+        </div>
+        <button class="btn btn-green btn-sm" id="scanRepliesBtn">🔍 Scan</button>
+      </div>
+
+      <div class="scan-info mb-10" id="scanInfo" style="display:none">
+        <span id="scanStatus">Scanning...</span>
+      </div>
+
+      <div id="replyCount" class="muted-text mb-8">0 replies found</div>
+
+      <div id="replyList">
+        <div class="empty-state">No replies yet.<br>Run a campaign first, then click "Scan" to check for replies.</div>
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════════
+         ANALYTICS TAB
+         ════════════════════════════════════════════════ -->
+    <div class="panel" id="panel-analytics">
+
+      <!-- Charts -->
+      <div class="section-title mb-6">📈 7-Day Activity</div>
+      <div class="chart-wrap mb-14">
+        <canvas id="chart-activity" width="320" height="110"></canvas>
+      </div>
+
+      <div class="section-title mb-6">🎯 Pipeline Funnel</div>
+      <div class="chart-wrap mb-14">
+        <canvas id="chart-funnel" width="320" height="100"></canvas>
+      </div>
+
+      <!-- Summary cards -->
+      <div class="stats-row mb-12">
+        <div class="stat-box">
+          <div class="stat-num" id="a-campaigns">0</div>
+          <div class="stat-label">Campaigns</div>
+        </div>
+        <div class="stat-box green">
+          <div class="stat-num" id="a-sent">0</div>
+          <div class="stat-label">Sent</div>
+        </div>
+        <div class="stat-box red">
+          <div class="stat-num" id="a-failed">0</div>
+          <div class="stat-label">Failed</div>
+        </div>
+        <div class="stat-box blue">
+          <div class="stat-num" id="a-replies">0</div>
+          <div class="stat-label">Replies</div>
+        </div>
+      </div>
+
+      <!-- Rate indicators -->
+      <div class="rate-grid mb-14">
+        <div class="rate-card">
+          <div class="rate-label">Success Rate</div>
+          <div class="rate-bar-wrap">
+            <div class="rate-bar green-bar" id="successBar" style="width:0%"></div>
+          </div>
+          <div class="rate-num" id="successRate">0%</div>
+        </div>
+        <div class="rate-card">
+          <div class="rate-label">Reply Rate</div>
+          <div class="rate-bar-wrap">
+            <div class="rate-bar blue-bar" id="replyBar" style="width:0%"></div>
+          </div>
+          <div class="rate-num" id="replyRate">0%</div>
+        </div>
+      </div>
+
+      <!-- Campaign history -->
+      <div class="section-title mb-8">Campaign History</div>
+      <div class="card-list mb-10" id="campaignHistory">
+        <div class="empty-state">No campaigns run yet.</div>
+      </div>
+
+      <div class="row gap-8 mb-10">
+        <button class="btn btn-outline" style="flex:1" id="refreshAnalyticsBtn">↻ Refresh</button>
+        <button class="btn btn-danger btn-sm" id="clearAnalyticsBtn">Clear</button>
+      </div>
+
+      <div class="divider-line mb-12"></div>
+
+      <!-- Report Export -->
+      <div class="section-badge mb-8">📄 Custom Report</div>
+      <p class="hint mb-8">Generate a styled HTML report — open in new tab, then print or save as PDF.</p>
+      <div class="row gap-8 mb-8">
+        <div style="flex:1">
+          <div class="label-sm mb-4">From</div>
+          <input type="date" id="reportFrom" class="input">
+        </div>
+        <div style="flex:1">
+          <div class="label-sm mb-4">To</div>
+          <input type="date" id="reportTo" class="input">
+        </div>
+      </div>
+      <button class="btn btn-outline" id="generateReportBtn" style="width:100%">📄 Generate Report</button>
+    </div>
+
+    <!-- ════════════════════════════════════════════════
+         DASHBOARD TAB
+         ════════════════════════════════════════════════ -->
+    <div class="panel" id="panel-dashboard">
+
+      <div class="row justify-between align-center mb-10">
+        <div class="section-badge">📋 Campaign Dashboard</div>
+        <button class="btn btn-outline btn-sm" id="db-refreshBtn">↻ Refresh</button>
+      </div>
+
+      <!-- Filter buttons -->
+      <div class="row gap-6 mb-10" id="db-filter-row">
+        <button class="btn btn-outline btn-sm sf-active" data-dbf="all">All</button>
+        <button class="btn btn-outline btn-sm" data-dbf="today">Today</button>
+        <button class="btn btn-outline btn-sm" data-dbf="week">This Week</button>
+        <button class="btn btn-outline btn-sm" data-dbf="month">This Month</button>
+      </div>
+
+      <div id="dashboard-campaigns">
+        <div class="empty-state">No campaigns yet. Run a campaign to see it here.</div>
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════════
+         SETTINGS TAB
+         ════════════════════════════════════════════════ -->
+    <div class="panel" id="panel-settings">
+
+      <div class="form-group">
+        <label class="label">Claude API Key</label>
+        <div class="row gap-6 mb-6">
+          <input type="password" id="apiKey" placeholder="sk-ant-api03-..." class="input">
+          <button class="btn btn-outline btn-sm" id="toggleKey">Show</button>
+        </div>
+        <div class="hint mb-8">For AI features. Get yours at <a class="green-link" id="anthropicLink" href="#">console.anthropic.com</a></div>
+        <button class="btn btn-outline btn-sm" id="testKey">Test API Key</button>
+        <div id="keyResult" class="result-msg mt-6" style="display:none"></div>
+      </div>
+
+      <div class="form-group">
+        <label class="label">Daily Send Limit</label>
+        <input type="number" id="dailyLimit" value="100" min="10" max="500" class="input" style="width:110px">
+        <div class="hint mt-4">Recommended: 50–100 per day</div>
+      </div>
+
+      <!-- Stealth Mode -->
+      <div class="card mb-10">
+        <div class="row justify-between align-center">
+          <div>
+            <div class="section-title">🕵️ Stealth Sending Mode</div>
+            <div class="hint mt-2">WA Web tab stays in background — nobody sees it sending</div>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="stealthMode">
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Privacy lock -->
+      <div class="card mb-10">
+        <div class="row justify-between align-center">
+          <div>
+            <div class="section-title">🔒 Auto Privacy on Start</div>
+            <div class="hint mt-2">Automatically enable privacy mode when campaign starts</div>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="autoPrivacy">
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Business Hours Auto-Reply -->
+      <div class="card mb-10">
+        <div class="row justify-between align-center">
+          <div>
+            <div class="section-title">🕐 Business Hours Auto-Reply</div>
+            <div class="hint mt-2">Bot sends out-of-hours message outside these times</div>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="bizHoursEnabled">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div id="bizHoursPanel" style="display:none;margin-top:12px">
+          <div class="row gap-10 mb-6">
+            <div style="flex:1"><div class="label-sm">From</div><input type="time" id="bizStart" value="09:00" class="input"></div>
+            <div style="flex:1"><div class="label-sm">To</div><input type="time" id="bizEnd" value="18:00" class="input"></div>
+          </div>
+          <div class="label mb-4">Working Days</div>
+          <div class="day-toggles">
+            <button class="day-btn" data-day="0">Sun</button>
+            <button class="day-btn active" data-day="1">Mon</button>
+            <button class="day-btn active" data-day="2">Tue</button>
+            <button class="day-btn active" data-day="3">Wed</button>
+            <button class="day-btn active" data-day="4">Thu</button>
+            <button class="day-btn active" data-day="5">Fri</button>
+            <button class="day-btn" data-day="6">Sat</button>
+          </div>
+          <div class="form-group mt-6">
+            <label class="label">Out-of-Hours Message</label>
+            <textarea id="bizOutMsg" class="textarea" rows="3" placeholder="Thanks for reaching out! We're currently closed and will respond during business hours."></textarea>
+          </div>
+        </div>
+      </div>
+
+      <!-- Birthday Auto-Sender -->
+      <div class="card mb-10">
+        <div class="row justify-between align-center">
+          <div>
+            <div class="section-title">🎂 Birthday Auto-Sender</div>
+            <div class="hint mt-2">Auto-sends wishes daily at 8 AM. Add <code>birthday</code> column (MM-DD) to CSV.</div>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="birthdayEnabled">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div id="birthdayPanel" style="display:none;margin-top:12px">
+          <label class="label">Birthday Message</label>
+          <textarea id="birthdayMsg" class="textarea" rows="3" placeholder="Happy Birthday {name}! 🎂 Wishing you a wonderful day!"></textarea>
+          <div class="hint mt-4">Use <code>{name}</code> for contact's name</div>
+        </div>
+      </div>
+
+      <!-- Webhook / Zapier Integration -->
+      <div class="card mb-10">
+        <div class="section-title mb-6">🔗 Webhook / Zapier Integration</div>
+        <div class="hint mb-8">POST campaign events to any URL (Zapier, Make, n8n, custom)</div>
+        <input type="text" id="webhookUrl" class="input mb-6" placeholder="https://hooks.zapier.com/hooks/catch/...">
+        <div class="row gap-6">
+          <button class="btn btn-outline btn-sm" id="testWebhookBtn" style="flex:1">🧪 Test Webhook</button>
+          <div id="webhookResult" class="result-msg" style="display:none;flex:2;margin:0"></div>
+        </div>
+      </div>
+
+      <!-- Link Click Tracker -->
+      <div class="card mb-10">
+        <div class="row justify-between align-center">
+          <div>
+            <div class="section-title">🔗 Link Click Tracker</div>
+            <div class="hint mt-2">Appends <code>?wa_ref=PHONE</code> to URLs in messages for tracking</div>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="linkTracking">
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Daily Business Digest -->
+      <div class="card mb-10">
+        <div class="row justify-between align-center">
+          <div>
+            <div class="section-title">📊 Daily Business Digest</div>
+            <div class="hint mt-2">Chrome notification at 9 AM with daily stats summary</div>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="digestEnabled">
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <button class="btn btn-green" id="saveSettingsBtn" style="width:100%">Save Settings</button>
+      <div id="saveResult" class="result-msg mt-8" style="display:none"></div>
+
+      <div class="divider-line mt-16 mb-12"></div>
+
+      <!-- DNC / Opt-out List -->
+      <div class="section-badge mb-8">🚫 DNC / Opt-out List</div>
+      <p class="hint mb-8">Contacts on this list are <strong style="color:#f85149">permanently skipped</strong> in all campaigns. Opt-out replies auto-add numbers here.</p>
+
+      <div class="row gap-6 mb-8">
+        <input type="text" id="dnc-addInput" class="input" placeholder="Phone number to block" style="flex:1">
+        <button class="btn btn-danger btn-sm" id="dnc-addBtn">+ Block</button>
+      </div>
+
+      <div id="dnc-list" class="card-list" style="max-height:180px">
+        <div class="empty-state">No blocked numbers.</div>
+      </div>
+      <div class="row justify-between mt-6">
+        <span class="muted-text" id="dnc-count">0 blocked</span>
+        <button class="btn btn-outline btn-sm" id="dnc-clearBtn">Clear All</button>
+      </div>
+
+      <div class="info-card mt-16">
+        <div class="info-title">ℹ️ Quick Tips</div>
+        <ul class="info-list">
+          <li>Keep WhatsApp Web open while sending</li>
+          <li>Never send more than 100 msgs/day to avoid bans</li>
+          <li>AI personalization makes messages unique (less ban risk)</li>
+          <li>Use A/B testing to find best performing messages</li>
+          <li>Scan replies after campaign to follow up with AI</li>
+        </ul>
+      </div>
+
+      <!-- Results tab data -->
+      <div class="form-group mt-16">
+        <label class="label">Last Campaign Results</label>
+        <div class="stats-row">
+          <div class="stat-box green"><div class="stat-num" id="statSent">0</div><div class="stat-label">Sent</div></div>
+          <div class="stat-box red"><div class="stat-num" id="statFailed">0</div><div class="stat-label">Failed</div></div>
+          <div class="stat-box gray"><div class="stat-num" id="statPending">0</div><div class="stat-label">Pending</div></div>
+        </div>
+        <button class="btn btn-outline mt-8" id="exportBtn" style="width:100%">⬇ Export Results CSV</button>
+      </div>
+    </div>
+
+  </div><!-- /panels -->
+
+  <!-- ── Campaign Controls ─────────────────────────────────────── -->
+  <div class="controls">
+    <div id="progressArea" style="display:none">
+      <div class="progress-label" id="progressLabel">Preparing...</div>
+      <div class="progress-track">
+        <div class="progress-bar" id="progressBar" style="width:0%"></div>
+      </div>
+      <div class="row justify-between mt-4">
+        <span class="progress-nums" id="progressNums">0 / 0</span>
+        <span class="variant-badge" id="variantBadge" style="display:none"></span>
+      </div>
+    </div>
+    <div class="row gap-8 mt-8">
+      <button class="btn btn-green btn-lg" id="startBtn">▶ Start Campaign</button>
+      <button class="btn btn-danger btn-lg" id="stopBtn" style="display:none">⏹ Stop</button>
+    </div>
+  </div>
+
+</div><!-- /app -->
+<script src="sidepanel.js"></script>
+</body>
+</html>

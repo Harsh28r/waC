@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "WA Bulk AI - Smart WhatsApp Messenger",
+  "version": "2.0.0",
+  "description": "AI-powered WhatsApp bulk messaging, quick sender, reply handler & analytics",
+  "permissions": [
+    "storage",
+    "sidePanel",
+    "scripting",
+    "tabs",
+    "activeTab",
+    "alarms",
+    "notifications"
+  ],
+  "host_permissions": [
+    "https://web.whatsapp.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://web.whatsapp.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "WA Bulk AI"
+  },
+  "side_panel": {
+    "default_path": "sidepanel/sidepanel.html"
+  }
+}

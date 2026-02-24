@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      width: 220px;
+      padding: 20px 16px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0f1117;
+      color: #e0e0e0;
+    }
+
+    .logo {
+      text-align: center;
+      margin-bottom: 18px;
+    }
+    .logo-emoji { font-size: 36px; }
+    .logo-name {
+      font-size: 17px;
+      font-weight: 700;
+      color: #25D366;
+      margin-top: 6px;
+    }
+    .logo-sub {
+      font-size: 11px;
+      color: #8b949e;
+      margin-top: 2px;
+    }
+
+    .btn {
+      display: block;
+      width: 100%;
+      padding: 10px 14px;
+      border: none;
+      border-radius: 7px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-bottom: 8px;
+      transition: background 0.2s;
+      text-align: center;
+    }
+    .btn-green {
+      background: #25D366;
+      color: #0f1117;
+    }
+    .btn-green:hover { background: #1db954; }
+
+    .btn-gray {
+      background: #21262d;
+      color: #c9d1d9;
+      border: 1px solid #30363d;
+    }
+    .btn-gray:hover { background: #30363d; }
+
+    .divider {
+      height: 1px;
+      background: #21262d;
+      margin: 12px 0;
+    }
+
+    .tip {
+      font-size: 10px;
+      color: #8b949e;
+      text-align: center;
+      line-height: 1.5;
+    }
+    .tip strong { color: #25D366; }
+  </style>
+</head>
+<body>
+  <div class="logo">
+    <div class="logo-emoji">🤖</div>
+    <div class="logo-name">WA Bulk AI</div>
+    <div class="logo-sub">AI-Powered Bulk Messaging</div>
+  </div>
+
+  <button class="btn btn-green" id="openPanel">▶ Open Dashboard</button>
+  <button class="btn btn-gray" id="openWA">Open WhatsApp Web</button>
+
+  <div class="divider"></div>
+
+  <p class="tip">
+    Keep <strong>WhatsApp Web</strong> open in a tab while running campaigns.
+  </p>
+
+  <script src="popup.js"></script>
+</body>
+</html>
