@@ -604,6 +604,12 @@
       </div>
 
       <div class="form-group">
+        <label class="label">Groq API Key <span style="font-weight:400;color:#8696a0;text-transform:none">(optional — for higher quality voice transcription)</span></label>
+        <input type="password" id="openaiApiKey" placeholder="gsk_..." class="input">
+        <div class="hint mt-4">Free at <a class="green-link" href="https://console.groq.com/keys" target="_blank">console.groq.com</a> — without a key, the browser mic method is used instead</div>
+      </div>
+
+      <div class="form-group">
         <label class="label">Daily Send Limit</label>
         <input type="number" id="dailyLimit" value="100" min="10" max="500" class="input" style="width:110px">
         <div class="hint mt-4">Recommended: 50–100 per day</div>

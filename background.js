@@ -52,6 +52,10 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     executeDripStep(alarm.name).catch(console.error);
   }
 
+  if (alarm.name.startsWith('meeting-alert-')) {
+    handleMeetingAlert(alarm.name).catch(console.error);
+  }
+
   if (alarm.name.startsWith('followup-')) {
     const phone = alarm.name.replace('followup-', '');
     const stored = await chrome.storage.local.get('contacts');
@@ -98,6 +102,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     ADD_DNC:             () => addDNC(msg.data),
     REMOVE_DNC:          () => removeDNC(msg.data),
     CLEAR_DNC:           () => clearDNC(),
+    GET_GOOGLE_MEET_LINK:   () => getGoogleMeetLink(),
+    TRANSCRIBE_VOICE_NOTE:  () => transcribeAudio(msg.data),
+    SAVE_MEETING:           () => saveMeeting(msg.data),
+    GET_MEETINGS:           () => getMeetings(),
+    DELETE_MEETING:         () => deleteMeeting(msg.data),
+    TRANSLATE_TEXT:         () => translateText(msg.data),
   };
 
   if (async_handlers[msg.type]) {
@@ -845,6 +855,155 @@ async function generateDigest() {
   console.log('[WA] Daily digest sent');
 }
 
+// ─── Google Meet Auto-Link ────────────────────────────────────────────────────
+async function getGoogleMeetLink() {
+  return new Promise(resolve => {
+    let meetTabId = null;
+
+    const done = (result) => {
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      clearTimeout(timer);
+      if (meetTabId) chrome.tabs.remove(meetTabId).catch(() => {});
+      resolve(result);
+    };
+
+    // Google Meet room URL: https://meet.google.com/abc-defg-hij
+    const MEET_PATTERN = /^https:\/\/meet\.google\.com\/[a-z]{3}-[a-z]{4}-[a-z]{3}/;
+
+    const onUpdated = (tabId, changeInfo) => {
+      if (tabId !== meetTabId) return;
+      const url = changeInfo.url || '';
+      if (MEET_PATTERN.test(url)) {
+        done({ success: true, link: url.split('?')[0] });
+      } else if (url.includes('accounts.google.com') || url.includes('/authError')) {
+        done({ success: false, error: 'Not logged into Google. Sign in to Google in Chrome first.' });
+      }
+    };
+
+    const timer = setTimeout(() => {
+      done({ success: false, error: 'Timeout — sign in to Google in Chrome and try again.' });
+    }, 20000);
+
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    chrome.tabs.create({ url: 'https://meet.google.com/new', active: false })
+      .then(tab => { meetTabId = tab.id; })
+      .catch(e => done({ success: false, error: e.message }));
+  });
+}
+
+// ─── Meeting Alerts ───────────────────────────────────────────────────────────
+async function saveMeeting({ contactName, title, datetime, platform, link, alertMinutes }) {
+  const id      = Date.now().toString();
+  const meeting = { id, contactName, title, datetime, platform, link, alertMinutes, createdAt: Date.now() };
+
+  const stored   = await chrome.storage.local.get('scheduledMeetings');
+  const meetings = stored.scheduledMeetings || [];
+  meetings.push(meeting);
+  if (meetings.length > 100) meetings.splice(0, meetings.length - 100);
+  await chrome.storage.local.set({ scheduledMeetings: meetings });
+
+  if (alertMinutes > 0 && datetime > Date.now()) {
+    const alertAt = datetime - alertMinutes * 60 * 1000;
+    if (alertAt > Date.now()) {
+      chrome.alarms.create(`meeting-alert-${id}`, { when: alertAt });
+      console.log('[WA] Meeting alert set for', new Date(alertAt).toLocaleString());
+    }
+  }
+  return { success: true, id };
+}
+
+async function getMeetings() {
+  const stored = await chrome.storage.local.get('scheduledMeetings');
+  return { success: true, meetings: stored.scheduledMeetings || [] };
+}
+
+async function deleteMeeting({ id }) {
+  chrome.alarms.clear(`meeting-alert-${id}`);
+  const stored   = await chrome.storage.local.get('scheduledMeetings');
+  const meetings = (stored.scheduledMeetings || []).filter(m => m.id !== id);
+  await chrome.storage.local.set({ scheduledMeetings: meetings });
+  return { success: true };
+}
+
+async function handleMeetingAlert(alarmName) {
+  const id       = alarmName.replace('meeting-alert-', '');
+  const stored   = await chrome.storage.local.get('scheduledMeetings');
+  const meeting  = (stored.scheduledMeetings || []).find(m => m.id === id);
+  if (!meeting) return;
+
+  const dt      = new Date(meeting.datetime);
+  const timeStr = dt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+  const dateStr = dt.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+  const minsLeft = Math.round((meeting.datetime - Date.now()) / 60000);
+  const whenTxt  = minsLeft <= 1 ? 'Starting now!' : `Starting in ${minsLeft} min`;
+
+  chrome.notifications.create(`meeting-notif-${id}`, {
+    type:               'basic',
+    iconUrl:            'icons/icon48.png',
+    title:              `📅 ${whenTxt} — ${meeting.contactName}`,
+    message:            `${meeting.title}\n${timeStr} · ${dateStr} · ${meeting.platform}${meeting.link ? '\n' + meeting.link : ''}`,
+    priority:           2,
+    requireInteraction: true
+  });
+
+  // Auto-send reminder WhatsApp message to the contact
+  const tabs = await chrome.tabs.query({ url: 'https://web.whatsapp.com/*' });
+  if (tabs.length > 0) {
+    const reminder = `⏰ *Meeting Reminder*\n\n*${meeting.title}* is starting ${minsLeft <= 1 ? 'now!' : `in ${minsLeft} minutes!`}\n📆 ${dateStr} · 🕐 ${timeStr} · 💻 ${meeting.platform}${meeting.link ? `\n🔗 ${meeting.link}` : ''}`;
+    chrome.tabs.sendMessage(tabs[0].id, { type: 'SEND_MEETING_REMINDER', reminder, contactName: meeting.contactName }).catch(() => {});
+  }
+}
+
+// ─── Text Translation (Google Translate unofficial API) ───────────────────────
+async function translateText({ text, targetLang = 'en' }) {
+  if (!text) return { success: false, error: 'No text provided' };
+  try {
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${encodeURIComponent(targetLang)}&dt=t&q=${encodeURIComponent(text)}`;
+    const res  = await fetch(url);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    const translated = (data[0] || []).map(s => s?.[0] || '').join('').trim();
+    const detected   = data[2] || '';
+    return { success: true, translated, detected };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+}
+
+// ─── Voice Note Transcription (Groq Whisper — Free) ──────────────────────────
+async function transcribeAudio({ base64, mimeType }) {
+  const stored = await chrome.storage.local.get('settings');
+  const apiKey = stored.settings?.groqApiKey;
+  if (!apiKey) return { success: false, error: 'Groq API key not set. Add it in Settings → Groq Key.' };
+
+  try {
+    const binary = atob(base64);
+    const bytes  = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+
+    const ext  = mimeType.includes('ogg') ? 'ogg' : mimeType.includes('webm') ? 'webm' :
+                 mimeType.includes('mp4') || mimeType.includes('aac') ? 'mp4' : 'ogg';
+    const blob = new Blob([bytes], { type: mimeType });
+    const form = new FormData();
+    form.append('file', blob, `audio.${ext}`);
+    form.append('model', 'whisper-large-v3-turbo');
+
+    const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${apiKey}` },
+      body: form
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      return { success: false, error: err.error?.message || `API error ${res.status}` };
+    }
+    const data = await res.json();
+    return { success: true, text: data.text?.trim() || '(no speech detected)' };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function randomInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
@@ -852,4 +1011,5 @@ function randomInt(min, max) { return Math.floor(Math.random() * (max - min + 1)
 async function broadcastProgress(data) {
   try { await chrome.storage.local.set({ campaignProgress: { ...data, ts: Date.now() } }); } catch (e) {}
   try { chrome.runtime.sendMessage({ type: 'PROGRESS', data }); } catch (e) {}
+
 }

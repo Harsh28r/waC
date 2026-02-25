@@ -6,7 +6,7 @@ let results     = [];
 let replies     = [];
 let isRunning   = false;
 let privacyOn   = false;
-let settings    = { apiKey: '', aiEnabled: false, minDelay: 15, maxDelay: 45, dailyLimit: 100, stealthMode: false, autoPrivacy: false };
+let settings    = { apiKey: '', openaiApiKey: '', aiEnabled: false, minDelay: 15, maxDelay: 45, dailyLimit: 100, stealthMode: false, autoPrivacy: false };
 
 // ─── Privacy Mode ─────────────────────────────────────────────────────────────
 const privacyBtn     = document.getElementById('privacyBtn');
@@ -661,6 +661,7 @@ function loadAnalytics() {
 // ─── SETTINGS TAB ────────────────────────────────────────────────────────────
 function applySettings() {
   document.getElementById('apiKey').value        = settings.apiKey      || '';
+  document.getElementById('openaiApiKey').value  = settings.groqApiKey || '';
   document.getElementById('aiEnabled').checked   = settings.aiEnabled   || false;
   document.getElementById('minDelay').value      = settings.minDelay    || 15;
   document.getElementById('maxDelay').value      = settings.maxDelay    || 45;
@@ -741,7 +742,8 @@ document.getElementById('testWebhookBtn').addEventListener('click', () => {
 });
 
 document.getElementById('saveSettingsBtn').addEventListener('click', () => {
-  settings.apiKey      = document.getElementById('apiKey').value.trim();
+  settings.apiKey       = document.getElementById('apiKey').value.trim();
+  settings.groqApiKey = document.getElementById('openaiApiKey').value.trim();
   settings.aiEnabled   = document.getElementById('aiEnabled').checked;
   settings.minDelay    = parseInt(document.getElementById('minDelay').value)  || 15;
   settings.maxDelay    = parseInt(document.getElementById('maxDelay').value)  || 45;
