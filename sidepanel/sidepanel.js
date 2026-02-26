@@ -408,6 +408,43 @@ document.getElementById('msgTemplate').addEventListener('input', () => {
   updatePreview();
 });
 
+// Image file picker
+let campaignImageData = null; // base64 data URL
+let campaignImageName = null;
+let campaignImageMime = null;
+
+document.getElementById('imagePickBtn').addEventListener('click', () => {
+  document.getElementById('imageFile').click();
+});
+
+document.getElementById('imageFile').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    campaignImageData = ev.target.result; // data:image/...;base64,...
+    campaignImageName = file.name;
+    campaignImageMime = file.type;
+    document.getElementById('imageFileName').textContent = file.name;
+    document.getElementById('imagePreviewImg').src = campaignImageData;
+    document.getElementById('imagePreview').style.display = 'block';
+    document.getElementById('imageClearBtn').style.display = '';
+    const hint = document.getElementById('captionHint');
+    if (hint) hint.style.display = 'inline';
+  };
+  reader.readAsDataURL(file);
+});
+
+document.getElementById('imageClearBtn').addEventListener('click', () => {
+  campaignImageData = campaignImageName = campaignImageMime = null;
+  document.getElementById('imageFile').value = '';
+  document.getElementById('imageFileName').textContent = 'No file chosen';
+  document.getElementById('imagePreview').style.display = 'none';
+  document.getElementById('imageClearBtn').style.display = 'none';
+  const hint = document.getElementById('captionHint');
+  if (hint) hint.style.display = 'none';
+});
+
 // A/B Testing toggle
 document.getElementById('abEnabled').addEventListener('change', e => {
   document.getElementById('abPanel').style.display = e.target.checked ? 'block' : 'none';
@@ -609,7 +646,7 @@ function renderReplies() {
         const msg = document.getElementById(`reply-input-${i}`)?.value?.trim();
         if (!msg) return;
         btn.disabled = true; btn.textContent = '⏳';
-        chrome.runtime.sendMessage({ type: 'SEND_REPLY', data: { phone: replies[i].phone, message: msg } }, resp => {
+        chrome.runtime.sendMessage({ type: 'SEND_REPLY', data: { phone: replies[i].phone, message: msg, originalText: replies[i].replyText } }, resp => {
           if (resp?.success) { replies.splice(i, 1); chrome.storage.local.set({ replies }); renderReplies(); showToast('Reply sent!'); }
           else { btn.disabled = false; btn.textContent = '✓ Send Reply'; showToast('Send failed: ' + resp?.error, 'err'); }
         });
@@ -804,6 +841,9 @@ function startCampaign() {
   const template  = document.getElementById('msgTemplate').value.trim();
   const templateB = document.getElementById('msgTemplateB').value.trim();
   const abEnabled = document.getElementById('abEnabled').checked;
+  const imageUrl  = campaignImageData || null;
+  const imageMime = campaignImageMime || 'image/jpeg';
+  const imageName = campaignImageName || 'image.jpg';
 
   if (!contacts.length) return showError('Add contacts first (Contacts tab)');
   if (!template)        return showError('Write a message template (Compose tab)');
@@ -828,7 +868,7 @@ function startCampaign() {
   const campaignName = document.getElementById('campaignName')?.value?.trim() || '';
   chrome.runtime.sendMessage({
     type: 'START_CAMPAIGN',
-    data: { contacts, template, templateB, abEnabled, settings: { ...settings, minDelay: minD, maxDelay: maxD, campaignName } }
+    data: { contacts, template, templateB, abEnabled, imageUrl, imageMime, imageName, settings: { ...settings, minDelay: minD, maxDelay: maxD, campaignName } }
   }, resp => {
     if (chrome.runtime.lastError) { showError('Start failed: ' + chrome.runtime.lastError.message); setRunningUI(false); isRunning = false; }
   });

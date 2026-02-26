@@ -6,7 +6,11 @@ export default function Footer() {
       <div className="footer-inner">
         <div className="footer-brand">
           <a href="#top" className="nav-logo">
-            <div className="nav-logo-icon">⚡</div>
+            <div className="nav-logo-icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+              </svg>
+            </div>
             <div className="nav-logo-text">WA <span>Bulk AI</span></div>
           </a>
           <p>
@@ -40,10 +44,9 @@ export default function Footer() {
       </div>
 
       <div className="footer-bottom">
-        <span>© 2026 WA Bulk AI. All rights reserved.</span>
+        <span>&copy; 2026 WA Bulk AI. All rights reserved.</span>
         <span>Made with 💚 for WhatsApp power users</span>
       </div>
     </footer>
   );
 }
-

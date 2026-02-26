@@ -142,7 +142,7 @@ async function runCampaign(data) {
   campaignRunning = true;
   shouldStop = false;
 
-  const { contacts, template, templateB, abEnabled, settings } = data;
+  const { contacts, template, templateB, abEnabled, imageUrl, imageMime, imageName, settings } = data;
   console.log('[WA] Campaign start:', contacts.length, 'contacts, A/B:', abEnabled);
 
   await broadcastProgress({ status: 'starting', total: contacts.length, currentIndex: 0 });
@@ -186,7 +186,7 @@ async function runCampaign(data) {
 
     await broadcastProgress({ status: 'sending', currentIndex: i, total: contacts.length, contact: contact.name || contact.phone, phone: contact.phone, variant, preview: message.substring(0, 60) });
 
-    const result = await sendWhatsAppMessage(waTabId, contact.phone, message, settings.stealthMode);
+    const result = await sendWhatsAppMessage(waTabId, contact.phone, message, settings.stealthMode, imageUrl || null, imageMime, imageName);
     console.log('[WA] Result for', contact.phone, ':', result.success, result.error || '');
 
     if (useB) bSent++; else aSent++;
@@ -371,8 +371,22 @@ async function scanReplies(data) {
 
 // ─── Send Reply ───────────────────────────────────────────────────────────────
 async function sendReplyToContact(data) {
-  const { phone, message } = data;
-  return await quickSend({ phone, message });
+  const { phone, message, originalText } = data;
+
+  const tabId = await findOrCreateWATab();
+  const phoneClean = phone.replace(/[^0-9]/g, '');
+  const url = `https://web.whatsapp.com/send?phone=${phoneClean}`;
+  await chrome.tabs.update(tabId, { url, active: true });
+  await sleep(800);
+  await waitForTabLoad(tabId);
+  await sleep(5000);
+
+  const response = await sendMessageToTab(tabId, {
+    type: 'QUOTED_REPLY',
+    originalText: originalText || '',
+    replyMessage: message
+  }, 4);
+  return response || { success: false, error: 'No response from WA page' };
 }
 
 // ─── AI Reply Generator ───────────────────────────────────────────────────────
@@ -438,18 +452,29 @@ async function clearAnalytics() {
 }
 
 // ─── WA Tab & Message Sending ─────────────────────────────────────────────────
-async function sendWhatsAppMessage(tabId, phone, message, stealthMode = false) {
+async function sendWhatsAppMessage(tabId, phone, message, stealthMode = false, imageUrl = null, imageMime = 'image/jpeg', imageName = 'image.jpg') {
   try {
     const phoneClean = phone.replace(/[^0-9]/g, '');
     if (!phoneClean) return { success: false, error: 'Invalid phone number' };
 
-    const url = `https://web.whatsapp.com/send?phone=${phoneClean}&text=${encodeURIComponent(message)}`;
-    // Stealth mode: don't bring tab to foreground
-    await chrome.tabs.update(tabId, { url, active: !stealthMode });
-    await waitForTabLoad(tabId);
-    await sleep(4000);
+    if (imageUrl) {
+      // Navigate to the chat, then inject image via content script
+      const chatUrl = `https://web.whatsapp.com/send?phone=${phoneClean}`;
+      await chrome.tabs.update(tabId, { url: chatUrl, active: !stealthMode });
+      await sleep(800);
+      await waitForTabLoad(tabId);
+      await sleep(5000);
+      const response = await sendMessageToTab(tabId, { type: 'SEND_WITH_IMAGE', imageData: imageUrl, imageMime, imageName, caption: message }, 4);
+      return response || { success: false, error: 'No response from WA page — is WA Web logged in?' };
+    }
 
-    const response = await sendMessageToTab(tabId, { type: 'CLICK_SEND' }, 4);
+    // Text-only: open chat, then type via content script
+    const url = `https://web.whatsapp.com/send?phone=${phoneClean}`;
+    await chrome.tabs.update(tabId, { url, active: !stealthMode });
+    await sleep(800); // let navigation start before checking load status
+    await waitForTabLoad(tabId);
+    await sleep(5000); // wait for WA React app to fully initialize
+    const response = await sendMessageToTab(tabId, { type: 'TYPE_AND_SEND', message }, 5);
     return response || { success: false, error: 'No response from WA page — is WA Web logged in?' };
   } catch (e) {
     return { success: false, error: e.message };

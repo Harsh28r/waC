@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useRef } from 'react';
 
 const plans = [
   {
@@ -8,10 +8,10 @@ const plans = [
     note: 'Perfect for getting started',
     featured: false,
     features: [
-      '50 bulk messages / day',
-      'Quick reply templates (5)',
+      '50 bulk messages/day',
+      '5 quick reply templates',
       'Basic contact cards',
-      'Schedule messages (3/day)',
+      'Schedule 3 msgs/day',
       'Community support',
     ],
     cta: 'Get Started Free',
@@ -20,37 +20,62 @@ const plans = [
   {
     name: 'Pro',
     price: '$12',
-    period: '/month',
-    note: 'For power users & small teams',
+    period: '/mo',
+    note: 'For power users & teams',
     featured: true,
     badge: 'MOST POPULAR',
     features: [
       'Unlimited bulk messages',
       'AI smart replies (GPT-4)',
-      'Unlimited templates & categories',
-      'Advanced CRM & contact tags',
+      'Unlimited templates',
+      'Advanced CRM & tags',
       'Analytics dashboard',
-      'Priority chat support',
-      'Export chat & contacts',
-      'Team collaboration (3 seats)',
+      'Priority support',
+      'Export chats & contacts',
+      'Team collab (3 seats)',
     ],
-    cta: 'Start 7-Day Free Trial',
+    cta: 'Start Free Trial',
     ctaClass: 'btn btn-primary btn-lg',
   },
 ];
 
+/* Spotlight follow effect on featured card */
+function SpotlightCard({ children, featured }) {
+  const cardRef = useRef(null);
+
+  const handleMove = (e) => {
+    if (!featured || !cardRef.current) return;
+    const rect = cardRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    cardRef.current.style.setProperty('--spot-x', `${x}px`);
+    cardRef.current.style.setProperty('--spot-y', `${y}px`);
+  };
+
+  return (
+    <div
+      ref={cardRef}
+      className={`pricing-card ${featured ? 'featured spotlight' : ''}`}
+      onMouseMove={handleMove}
+    >
+      {featured && <div className="pricing-spotlight-overlay" />}
+      {children}
+    </div>
+  );
+}
+
 export default function Pricing() {
   return (
     <section className="pricing" id="pricing">
-      <div className="section-label" style={{ justifyContent: 'center' }}>💎 Pricing</div>
+      <div className="section-label" style={{ justifyContent: 'center', margin: '0 auto 14px' }}>💎 Pricing</div>
       <h2 className="section-title">Simple, transparent pricing</h2>
       <p className="section-sub" style={{ margin: '0 auto' }}>
-        Start free and upgrade when you need more power. No hidden fees, cancel anytime.
+        Start free. Upgrade when you need more. Cancel anytime.
       </p>
 
       <div className="pricing-cards">
         {plans.map((plan, i) => (
-          <div className={`pricing-card ${plan.featured ? 'featured' : ''}`} key={i}>
+          <SpotlightCard key={i} featured={plan.featured}>
             {plan.badge && <div className="pricing-badge">{plan.badge}</div>}
             <h3>{plan.name}</h3>
             <div className="price">{plan.price}<span>{plan.period}</span></div>
@@ -63,10 +88,9 @@ export default function Pricing() {
             <a href="https://chrome.google.com/webstore" className={plan.ctaClass} style={{ width: '100%' }} target="_blank" rel="noreferrer">
               {plan.cta}
             </a>
-          </div>
+          </SpotlightCard>
         ))}
       </div>
     </section>
   );
 }
-

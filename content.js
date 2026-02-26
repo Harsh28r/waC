@@ -36,6 +36,22 @@ const SEL = {
   captionInput: [
     'div[contenteditable="true"][data-tab="11"]',
     '[data-testid="media-caption-input-container"] div[contenteditable]'
+  ],
+  newChatBtn: [
+    '[data-testid="new-chat-btn"]',
+    '[aria-label="New chat"]',
+    '[title="New chat"]',
+    'span[data-icon="new-chat-outline"]'
+  ],
+  searchInput: [
+    '[data-testid="search-input"]',
+    'div[contenteditable][data-tab="3"]',
+    '[aria-label="Search input textbox"]'
+  ],
+  composeBox: [
+    'div[contenteditable][data-tab="10"]',
+    '[data-testid="conversation-compose-box-input"]',
+    'footer div[contenteditable]'
   ]
 };
 
@@ -127,6 +143,38 @@ async function getUnreadContacts() {
   return { names };
 }
 
+// ─── Navigate to a phone number using WA sidebar search (no page reload) ──────
+async function openChatByPhone(phone) {
+  if (findEl(SEL.qrCode)) return { success: false, error: 'WA Web not logged in — scan QR first' };
+
+  // Dismiss any open dialog / chat
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
+  await sleep(400);
+
+  // Click "New chat" icon to open the search pane
+  const newChatBtn = findEl(SEL.newChatBtn);
+  if (newChatBtn) { newChatBtn.click(); await sleep(700); }
+
+  // Find the search input
+  const searchInput = await waitForEl(SEL.searchInput, 6000);
+  if (!searchInput) return { success: false, error: 'Search input not found' };
+
+  // Clear and type the phone number
+  searchInput.focus();
+  document.execCommand('selectAll', false, null);
+  document.execCommand('delete', false, null);
+  await sleep(200);
+  document.execCommand('insertText', false, phone);
+  await sleep(2200); // wait for search results
+
+  // Click the first result (contact or "Message +XXXX")
+  const firstResult = document.querySelector('[data-testid="cell-frame-container"]');
+  if (!firstResult) return { success: false, error: 'No search result for ' + phone };
+  firstResult.click();
+  await sleep(1500);
+  return { success: true };
+}
+
 // ─── Send Image (with file URL) ───────────────────────────────────────────────
 async function sendWithCaption(caption) {
   // Caption is already in the input via the ?text= URL parameter
@@ -135,6 +183,84 @@ async function sendWithCaption(caption) {
   if (!sendBtn) return { success: false, error: 'Media send button not found' };
   sendBtn.click();
   await sleep(800);
+  return { success: true };
+}
+
+// ─── Insert text with proper line-break handling for WA Lexical editor ─────────
+async function insertMessageText(el, text) {
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i]) {
+      document.execCommand('insertText', false, lines[i]);
+      await sleep(30);
+    }
+    if (i < lines.length - 1) {
+      // Shift+Enter = line break in WA (plain Enter sends the message)
+      el.dispatchEvent(new KeyboardEvent('keydown',  { key: 'Enter', code: 'Enter', shiftKey: true, bubbles: true, cancelable: true }));
+      el.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', shiftKey: true, bubbles: true, cancelable: true }));
+      el.dispatchEvent(new KeyboardEvent('keyup',    { key: 'Enter', code: 'Enter', shiftKey: true, bubbles: true, cancelable: true }));
+      await sleep(30);
+    }
+  }
+}
+
+// ─── Send Image from base64 data with caption ─────────────────────────────────
+async function sendImageWithCaption(imageData, imageMime, imageName, caption) {
+  if (findEl(SEL.qrCode)) return { success: false, error: 'WA Web not logged in — scan QR first' };
+
+  // Wait for chat to be ready
+  const header = await waitForEl(['#main header', '#main [data-testid="conversation-header"]'], 12000);
+  if (!header) return { success: false, error: 'Chat did not open' };
+  await sleep(600);
+
+  // Convert base64 to File object
+  const base64 = imageData.split(',')[1];
+  const binary  = atob(base64);
+  const bytes   = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  const blob = new Blob([bytes], { type: imageMime || 'image/jpeg' });
+  const file = new File([blob], imageName || 'image.jpg', { type: imageMime || 'image/jpeg' });
+
+  // Approach 1: drag-and-drop onto the chat area (most reliable — triggers WA's native handler)
+  const chatArea = document.querySelector('#main');
+  if (chatArea) {
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    chatArea.dispatchEvent(new DragEvent('dragenter', { bubbles: true, cancelable: true, dataTransfer: dt }));
+    await sleep(100);
+    chatArea.dispatchEvent(new DragEvent('dragover',  { bubbles: true, cancelable: true, dataTransfer: dt }));
+    await sleep(100);
+    chatArea.dispatchEvent(new DragEvent('drop',      { bubbles: true, cancelable: true, dataTransfer: dt }));
+    await sleep(2500);
+  }
+
+  // Fallback: file input injection (if drag-drop didn't open the preview)
+  if (!findEl(SEL.captionInput)) {
+    const fileInput = document.querySelector(SEL.imageInput);
+    if (!fileInput) return { success: false, error: 'Image input not found' };
+    const dt2 = new DataTransfer();
+    dt2.items.add(file);
+    fileInput.files = dt2.files;
+    fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+    await sleep(2500);
+  }
+
+  // Type caption in media preview caption box
+  if (caption) {
+    const captionEl = await waitForEl(SEL.captionInput, 6000);
+    if (captionEl) {
+      captionEl.focus();
+      await sleep(300);
+      await insertMessageText(captionEl, caption);
+      await sleep(400);
+    }
+  }
+
+  // Click send in media preview
+  const sendBtn = await waitForEl(SEL.sendButton, 8000);
+  if (!sendBtn) return { success: false, error: 'Media send button not found' };
+  sendBtn.click();
+  await sleep(1000);
   return { success: true };
 }
 
@@ -355,10 +481,10 @@ async function checkAndReply() {
 async function typeAndSend(text) {
   // Scope strictly to the chat compose area — NOT the search bar
   const input =
-    document.querySelector('footer._ak1i [data-lexical-editor="true"]') ||
     document.querySelector('#main footer [data-lexical-editor="true"]') ||
-    document.querySelector('footer._ak1i div[contenteditable="true"][data-tab="10"]') ||
-    document.querySelector('#main div[contenteditable="true"][data-tab="10"]');
+    document.querySelector('#main footer div[contenteditable="true"]') ||
+    document.querySelector('#main div[contenteditable="true"][data-tab="10"]') ||
+    document.querySelector('div[contenteditable="true"][data-tab="10"]');
 
   if (!input) return false;
 
@@ -391,10 +517,10 @@ async function typeAndSend(text) {
 // ─── Insert Text (no send) ────────────────────────────────────────────────────
 async function insertText(text) {
   const input =
-    document.querySelector('footer._ak1i [data-lexical-editor="true"]') ||
     document.querySelector('#main footer [data-lexical-editor="true"]') ||
-    document.querySelector('footer._ak1i div[contenteditable="true"][data-tab="10"]') ||
-    document.querySelector('#main div[contenteditable="true"][data-tab="10"]');
+    document.querySelector('#main footer div[contenteditable="true"]') ||
+    document.querySelector('#main div[contenteditable="true"][data-tab="10"]') ||
+    document.querySelector('div[contenteditable="true"][data-tab="10"]');
   if (!input) return false;
   input.focus();
   await sleep(100);
@@ -412,126 +538,160 @@ function escapeHtml(str) {
   return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-// ─── Quick Reply Templates ────────────────────────────────────────────────────
-const QR_PANEL_ID = 'wa-qr-panel';
+// ─── Quick Reply Templates ─────────────────────────────────────────────────────
+const DEFAULT_TEMPLATES = [
+  { id: 'dft-1', name: 'Hi 👋',    text: 'Hi! How are you? 😊' },
+  { id: 'dft-2', name: 'Thanks',   text: 'Thank you! 🙏' },
+  { id: 'dft-3', name: 'On way',   text: "I'm on my way!" },
+  { id: 'dft-4', name: 'Later',    text: "I'll get back to you shortly." },
+  { id: 'dft-5', name: 'Noted ✅', text: 'Noted! I will take care of it.' },
+];
 
 function getTemplates() {
   return new Promise(resolve =>
-    chrome.storage.local.get('quickReplyTemplates', d => resolve(d.quickReplyTemplates || []))
+    chrome.storage.local.get('quickReplyTemplates', d => {
+      const saved = d.quickReplyTemplates;
+      resolve(saved && saved.length ? saved : DEFAULT_TEMPLATES);
+    })
   );
 }
 function saveTemplates(templates) {
   return new Promise(resolve => chrome.storage.local.set({ quickReplyTemplates: templates }, resolve));
 }
 
-function closeQuickReplyPanel() {
-  const p = document.getElementById(QR_PANEL_ID);
-  if (p) p.remove();
+// ─── Quick Reply Strip (chip bar above compose area) ───────────────────────────
+const STRIP_ID  = 'wa-qr-strip';
+let   stripData = [];      // in-memory cache of templates
+let   stripVisible = true;  // strip is open by default
+
+function renderStripChips() {
+  const row = document.querySelector('#wa-qr-strip .wqrs-row');
+  if (!row) return;
+  // Only update HTML — clicks are handled by the delegated listener on the row
+  if (!stripData.length) {
+    row.innerHTML = `
+      <span style="color:#4a5a65;font-size:12px;padding:0 4px">No quick replies yet —</span>
+      <button class="wqrs-add-chip" id="wqrs-add-btn">＋ Add first one</button>`;
+  } else {
+    row.innerHTML = stripData.map(t => `
+      <div class="wqrs-chip" data-id="${t.id}" title="${escapeHtml(t.text)}">
+        <div>
+          <div class="wqrs-chip-name">${escapeHtml(t.name)}</div>
+          <div class="wqrs-chip-preview">${escapeHtml(t.text.substring(0, 35))}${t.text.length > 35 ? '…' : ''}</div>
+        </div>
+        <button class="wqrs-chip-del" data-id="${t.id}" title="Remove">×</button>
+      </div>`).join('') +
+      `<button class="wqrs-add-chip" id="wqrs-add-btn">＋ New</button>`;
+  }
 }
 
-async function openQuickReplyPanel() {
-  if (document.getElementById(QR_PANEL_ID)) { closeQuickReplyPanel(); return; }
+function openAddForm() {
+  const form = document.getElementById('wqrs-inline-form');
+  if (!form) return;
+  form.classList.add('wqrs-form-open');
+  document.getElementById('wqrs-fname')?.focus();
+}
 
-  const templates = await getTemplates();
-  let current = [...templates];
+function closeAddForm() {
+  const form = document.getElementById('wqrs-inline-form');
+  if (!form) return;
+  form.classList.remove('wqrs-form-open');
+  const n = document.getElementById('wqrs-fname');
+  const t = document.getElementById('wqrs-ftext');
+  if (n) n.value = '';
+  if (t) t.value = '';
+}
 
-  const renderList = (list, search = '') => {
-    const filtered = search
-      ? list.filter(t => t.name.toLowerCase().includes(search.toLowerCase()) || t.text.toLowerCase().includes(search.toLowerCase()))
-      : list;
-    if (!filtered.length) {
-      return `<div class="wqr-empty">${search ? 'No matches' : 'No templates yet — add one below!'}</div>`;
-    }
-    return filtered.map(t => `
-      <div class="wqr-item">
-        <div class="wqr-item-name">${escapeHtml(t.name)}</div>
-        <div class="wqr-item-text">${escapeHtml(t.text.substring(0, 90))}${t.text.length > 90 ? '…' : ''}</div>
-        <div class="wqr-item-actions">
-          <button class="wqr-insert" data-id="${t.id}">Insert</button>
-          <button class="wqr-delete" data-id="${t.id}">✕</button>
-        </div>
-      </div>`).join('');
-  };
+function injectQuickReplyStrip() {
+  // Re-inject if disconnected (navigated to new chat)
+  const existing = document.getElementById(STRIP_ID);
+  if (existing && document.body.contains(existing)) return;
+  if (existing) existing.remove();
 
-  const panel = document.createElement('div');
-  panel.id = QR_PANEL_ID;
-  panel.innerHTML = `
-    <div class="wqr-header">
-      <span>⚡ Quick Reply Templates</span>
-      <button class="wqr-close">✕</button>
-    </div>
-    <div class="wqr-search-wrap">
-      <input class="wqr-search" placeholder="Search templates…" autocomplete="off">
-    </div>
-    <div class="wqr-list" id="wqr-list">${renderList(current)}</div>
-    <div class="wqr-add">
-      <div class="wqr-add-title">+ New Template</div>
-      <input class="wqr-finput" id="wqr-new-name" placeholder="Template name (e.g. Greeting)">
-      <textarea class="wqr-finput wqr-ftextarea" id="wqr-new-text" placeholder="Message text…" rows="3"></textarea>
-      <button class="wqr-save-btn" id="wqr-save">Save Template</button>
+  const footer = document.querySelector('#main footer');
+  if (!footer) return;
+
+  const strip = document.createElement('div');
+  strip.id = STRIP_ID;
+  strip.innerHTML = `
+    <div class="wqrs-row"></div>
+    <div class="wqrs-inline-form" id="wqrs-inline-form">
+      <div class="wqrs-form-title">⚡ New Quick Reply</div>
+      <input id="wqrs-fname" placeholder="Name  (e.g. Greeting)" autocomplete="off">
+      <textarea id="wqrs-ftext" rows="3" placeholder="Message text…"></textarea>
+      <div class="wqrs-form-btns">
+        <button class="wqrs-form-save" id="wqrs-fsave">Save</button>
+        <button class="wqrs-form-cancel" id="wqrs-fcancel">Cancel</button>
+      </div>
     </div>`;
-  document.body.appendChild(panel);
+  footer.parentNode.insertBefore(strip, footer);
 
-  // Position below the meeting bar (now in the header area)
-  const bar = document.getElementById('wa-meeting-bar');
-  if (bar) {
-    const r = bar.getBoundingClientRect();
-    panel.style.top  = (r.bottom + 8) + 'px';
-    panel.style.left = Math.max(r.left - 200, 10) + 'px';
-  } else {
-    // Fallback: center on screen
-    panel.style.top  = '60px';
-    panel.style.right = '80px';
-  }
+  // ── Delegated click handler on the chip row (survives innerHTML replacements) ──
+  strip.querySelector('.wqrs-row').addEventListener('click', async e => {
+    e.stopPropagation();
+    // Delete button
+    const del = e.target.closest('.wqrs-chip-del');
+    if (del) {
+      stripData = stripData.filter(x => x.id !== del.dataset.id);
+      await saveTemplates(stripData);
+      renderStripChips();
+      return;
+    }
+    // ＋ New / ＋ Add first one
+    if (e.target.closest('.wqrs-add-chip')) {
+      openAddForm();
+      return;
+    }
+    // Template chip
+    const chip = e.target.closest('.wqrs-chip');
+    if (chip) {
+      const t = stripData.find(x => x.id === chip.dataset.id);
+      if (t) await insertText(t.text);
+    }
+  }, true); // capture phase so WA can't block us
 
-  panel.querySelector('.wqr-close').addEventListener('click', closeQuickReplyPanel);
-
-  // Close on outside click
-  setTimeout(() => {
-    document.addEventListener('click', function outside(e) {
-      if (!panel.contains(e.target) && e.target.id !== 'wa-qr-btn') {
-        closeQuickReplyPanel();
-        document.removeEventListener('click', outside);
-      }
-    }, true);
-  }, 0);
-
-  panel.querySelector('.wqr-search').addEventListener('input', function () {
-    document.getElementById('wqr-list').innerHTML = renderList(current, this.value);
-    bindList();
-  });
-
-  panel.querySelector('#wqr-save').addEventListener('click', async () => {
-    const name = panel.querySelector('#wqr-new-name').value.trim();
-    const text = panel.querySelector('#wqr-new-text').value.trim();
+  // ── Inline form buttons ──
+  strip.querySelector('#wqrs-fsave').addEventListener('click', async e => {
+    e.stopPropagation();
+    const name = strip.querySelector('#wqrs-fname').value.trim();
+    const text = strip.querySelector('#wqrs-ftext').value.trim();
     if (!name || !text) return;
-    current.push({ id: Date.now().toString(), name, text });
-    await saveTemplates(current);
-    panel.querySelector('#wqr-new-name').value = '';
-    panel.querySelector('#wqr-new-text').value = '';
-    document.getElementById('wqr-list').innerHTML = renderList(current);
-    bindList();
-  });
+    stripData.push({ id: Date.now().toString(), name, text });
+    await saveTemplates(stripData);
+    renderStripChips();
+    closeAddForm();
+  }, true);
+  strip.querySelector('#wqrs-fcancel').addEventListener('click', e => {
+    e.stopPropagation();
+    closeAddForm();
+  }, true);
 
-  function bindList() {
-    panel.querySelectorAll('.wqr-insert').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        const t = current.find(x => x.id === btn.dataset.id);
-        if (t) { await insertText(t.text); closeQuickReplyPanel(); }
-      });
-    });
-    panel.querySelectorAll('.wqr-delete').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        current = current.filter(x => x.id !== btn.dataset.id);
-        await saveTemplates(current);
-        const search = panel.querySelector('.wqr-search').value;
-        document.getElementById('wqr-list').innerHTML = renderList(current, search);
-        bindList();
-      });
-    });
+  if (stripVisible) {
+    strip.classList.add('wqrs-open');
+    getTemplates().then(t => { stripData = t; renderStripChips(); });
   }
-  bindList();
-  panel.querySelector('#wqr-new-name').focus();
+  // Keep ⚡ button in sync
+  document.getElementById('wa-qr-btn')?.classList.toggle('active', stripVisible);
+}
+
+async function toggleQuickReplyStrip() {
+  let strip = document.getElementById(STRIP_ID);
+  if (!strip) { injectQuickReplyStrip(); strip = document.getElementById(STRIP_ID); }
+  if (!strip) return;
+
+  stripVisible = !strip.classList.contains('wqrs-open');
+
+  if (stripVisible) {
+    stripData = await getTemplates();
+    renderStripChips();
+    strip.classList.add('wqrs-open');
+  } else {
+    strip.classList.remove('wqrs-open');
+    closeAddForm();
+  }
+
+  // Toggle active highlight on ⚡ button
+  document.getElementById('wa-qr-btn')?.classList.toggle('active', stripVisible);
 }
 
 // ─── Audio Interceptor (runs in page main-world via injected script) ─────────
@@ -1005,6 +1165,108 @@ function injectMeetingStyles() {
       cursor: pointer; font-family: inherit;
     }
     .wqr-save-btn:hover { background: #02c09a; }
+
+    /* ── Quick Reply Strip (above compose bar) ── */
+    #wa-qr-strip {
+      display: none;
+      flex-direction: column;
+      background: #111b21;
+      border-top: 1px solid #2a3942;
+      flex-shrink: 0;
+      position: relative;
+      z-index: 100;
+      pointer-events: auto;
+    }
+    #wa-qr-strip.wqrs-open { display: flex; }
+    #wa-qr-strip * { pointer-events: auto; }
+    .wqrs-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      overflow-x: auto;
+      scrollbar-width: thin;
+      scrollbar-color: #2a3942 transparent;
+      flex-wrap: nowrap;
+    }
+    .wqrs-row::-webkit-scrollbar { height: 3px; }
+    .wqrs-row::-webkit-scrollbar-thumb { background: #2a3942; border-radius: 2px; }
+    .wqrs-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: #2a3942;
+      border: 1px solid #3b4a54;
+      border-radius: 16px;
+      padding: 4px 6px 4px 12px;
+      color: #e9edef;
+      font-size: 12px;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+      max-width: 200px;
+      transition: border-color 0.15s;
+      user-select: none;
+    }
+    .wqrs-chip:hover { border-color: #00a884; }
+    .wqrs-chip-name { overflow: hidden; text-overflow: ellipsis; max-width: 140px; }
+    .wqrs-chip-preview { color: #8696a0; font-size: 10px; overflow: hidden; text-overflow: ellipsis; max-width: 140px; }
+    .wqrs-chip-del {
+      background: none; border: none; color: #4a5a65;
+      cursor: pointer; font-size: 14px; padding: 0 4px 0 2px;
+      line-height: 1; display: flex; align-items: center; flex-shrink: 0;
+    }
+    .wqrs-chip-del:hover { color: #f85149; }
+    .wqrs-add-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: none;
+      border: 1px dashed #3b4a54;
+      border-radius: 16px;
+      padding: 4px 12px;
+      color: #00a884;
+      font-size: 12px;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+      font-family: inherit;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .wqrs-add-chip:hover { border-color: #00a884; background: #1a2c27; }
+    /* Inline add-template form (slides open inside the strip) */
+    .wqrs-inline-form {
+      display: none;
+      flex-direction: column;
+      gap: 7px;
+      padding: 10px 12px 12px;
+      border-top: 1px solid #2a3942;
+      background: #1a2228;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+    .wqrs-inline-form.wqrs-form-open { display: flex; }
+    .wqrs-form-title { color: #e9edef; font-size: 13px; font-weight: 700; margin-bottom: 2px; }
+    .wqrs-inline-form input, .wqrs-inline-form textarea {
+      background: #2a3942; border: 1px solid #3b4a54; border-radius: 8px;
+      color: #e9edef; padding: 7px 10px; font-size: 12px; outline: none;
+      font-family: inherit; box-sizing: border-box; width: 100%; resize: none;
+    }
+    .wqrs-inline-form input:focus, .wqrs-inline-form textarea:focus { border-color: #00a884; }
+    .wqrs-inline-form input::placeholder, .wqrs-inline-form textarea::placeholder { color: #4a5a65; }
+    .wqrs-form-btns { display: flex; gap: 6px; margin-top: 2px; }
+    .wqrs-form-save {
+      flex: 1; background: #00a884; color: #fff; border: none; border-radius: 8px;
+      padding: 8px; font-size: 12px; font-weight: 700; cursor: pointer; font-family: inherit;
+    }
+    .wqrs-form-save:hover { background: #02c09a; }
+    .wqrs-form-cancel {
+      background: #2a3942; color: #8696a0; border: 1px solid #3b4a54;
+      border-radius: 8px; padding: 8px 12px; font-size: 12px; cursor: pointer; font-family: inherit;
+    }
+    .wqrs-form-cancel:hover { background: #3b4a54; color: #e9edef; }
+    /* active state for ⚡ button */
+    #wa-qr-btn.active { background: #005c4b !important; color: #00a884 !important; }
+
     /* ── Voice Note Transcription ── */
     .wa-transcribe-btn {
       display: inline-flex; align-items: center; justify-content: center;
@@ -1488,7 +1750,7 @@ function ensureMeetingBar() {
 
     bar.appendChild(mkBtn(MEETING_BTN_ID, SVG_CAL,  'Schedule Meeting', 'wa-icon-btn-primary', openMeetingModal));
     bar.appendChild(div1);
-    bar.appendChild(mkBtn('wa-qr-btn',     SVG_BOLT, 'Quick Reply Templates', '', openQuickReplyPanel));
+    bar.appendChild(mkBtn('wa-qr-btn',     SVG_BOLT, 'Quick Reply Templates', '', toggleQuickReplyStrip));
     bar.appendChild(mkBtn('wa-card-btn',   SVG_PER,  'Contact Card (CRM)',    '', openCardPanel));
     bar.appendChild(mkBtn('wa-export-btn', SVG_EXP,  'Export Chat as .txt',   '', exportChat));
 
@@ -1502,6 +1764,7 @@ function ensureMeetingBar() {
 injectAudioInterceptor(); // run immediately on load
 setInterval(() => {
   ensureMeetingBar();
+  injectQuickReplyStrip();
   injectTranscribeButtons();
   injectTranslateButtons();
   injectHoverReply();
@@ -1922,142 +2185,248 @@ function injectHoverReply() {
 }
 
 async function triggerNativeReply(msgContainer) {
-  const ourBtn = document.getElementById('wa-hover-reply');
-  if (ourBtn) ourBtn.classList.remove('whr-visible');
+  document.getElementById('wa-hover-reply')?.classList.remove('whr-visible');
 
-  // Helper: given an icon span, get the nearest clickable ancestor
-  const iconToBtn = el =>
-    el.closest('button, [role="button"], [tabindex]') || el.parentElement || el;
+  msgContainer.scrollIntoView({ block: 'center', behavior: 'instant' });
+  await sleep(250);
 
-  // Helper: walk UP from el to find the first ancestor with low opacity/visibility/pointer-events:none
-  const findHiddenPanel = (el, stopAt) => {
-    let node = el.parentElement;
-    while (node && node !== stopAt) {
-      const cs = window.getComputedStyle(node);
-      if (parseFloat(cs.opacity) < 0.95 || cs.pointerEvents === 'none' ||
-          cs.visibility === 'hidden' || cs.display === 'none') return node;
+  const bubble = getBubbleEl(msgContainer) || msgContainer;
+  const rect   = bubble.getBoundingClientRect();
+  const cx     = Math.round(rect.left + rect.width  / 2);
+  const cy     = Math.round(rect.top  + rect.height / 2);
+  const coords = { bubbles: true, cancelable: true, clientX: cx, clientY: cy };
+
+  // Force-reveal a hidden element; return a restore fn
+  const reveal = el => {
+    if (!el) return () => {};
+    const s = el.style;
+    const prev = { op: s.opacity, pe: s.pointerEvents, vis: s.visibility, dis: s.display };
+    s.setProperty('opacity',        '1',       'important');
+    s.setProperty('pointer-events', 'auto',    'important');
+    s.setProperty('visibility',     'visible', 'important');
+    if (getComputedStyle(el).display === 'none') s.setProperty('display', 'flex', 'important');
+    return () => { s.opacity = prev.op; s.pointerEvents = prev.pe; s.visibility = prev.vis; s.display = prev.dis; };
+  };
+
+  // Build a set of DOM roots to search — WA may put the action bar anywhere
+  // relative to the message: inside it, as a sibling, or in a parent
+  const buildRoots = () => {
+    const roots = new Set();
+    let node = msgContainer;
+    for (let i = 0; i < 5; i++) {
+      if (!node) break;
+      roots.add(node);
       node = node.parentElement;
+    }
+    const listItem = msgContainer.closest('[data-testid^="list-item"], [data-id]');
+    if (listItem) roots.add(listItem);
+    return [...roots];
+  };
+
+  const REPLY_SELS = [
+    '[data-testid="msg-action-reply"]',
+    '[aria-label="Reply"]',
+    '[aria-label*="eply"]',
+    '[data-icon="reply"]',
+    'button[title="Reply"]',
+  ];
+
+  // Look for reply button / action bar, avoiding quoting the *quoted message* widget
+  const findReplyBtn = (root) => {
+    for (const sel of REPLY_SELS) {
+      const btn = root.querySelector(sel);
+      // Skip buttons that are inside a quoted-message preview (already-quoted context)
+      if (btn && !btn.closest('[data-testid="quoted-msg"]')) return btn;
     }
     return null;
   };
 
-  // Helper: reveal a panel temporarily and return a restore function
-  const revealPanel = (panel) => {
-    if (!panel) return () => {};
-    const saved = {
-      opacity: panel.style.opacity,
-      pe: panel.style.pointerEvents,
-      vis: panel.style.visibility,
-      dis: panel.style.display
-    };
-    panel.style.setProperty('opacity',        '1',    'important');
-    panel.style.setProperty('pointer-events', 'auto', 'important');
-    panel.style.setProperty('visibility',     'visible', 'important');
-    if (window.getComputedStyle(panel).display === 'none')
-      panel.style.setProperty('display', 'block', 'important');
-    return () => {
-      panel.style.opacity = saved.opacity;
-      panel.style.pointerEvents = saved.pe;
-      panel.style.visibility = saved.vis;
-      panel.style.display = saved.dis;
-    };
+  // ── Method 1: hover events → look for reply button in all ancestor roots ──
+  for (const target of [msgContainer, bubble]) {
+    target.dispatchEvent(new PointerEvent('pointerover',  { ...coords, pointerId: 1 }));
+    target.dispatchEvent(new PointerEvent('pointerenter', { ...coords, pointerId: 1, bubbles: false }));
+    target.dispatchEvent(new MouseEvent('mouseover',  coords));
+    target.dispatchEvent(new MouseEvent('mouseenter', { ...coords, bubbles: false }));
+  }
+  await sleep(500);
+
+  for (const root of buildRoots()) {
+    // Also try the explicit action bar child
+    const actionBar = root.querySelector('[data-testid="msg-action-bar"]');
+    for (const r of [root, actionBar].filter(Boolean)) {
+      const btn = findReplyBtn(r);
+      if (btn) {
+        const restore = reveal(btn);
+        btn.click();
+        await sleep(80);
+        restore();
+        return;
+      }
+    }
+    // Force-reveal action bar then retry
+    if (actionBar) {
+      const restore = reveal(actionBar);
+      await sleep(100);
+      const btn = findReplyBtn(actionBar);
+      if (btn) { btn.click(); restore(); return; }
+      restore();
+    }
+  }
+
+  // ── Method 2: contextmenu on bubble → click "Reply" in WA's popup menu ──
+  // WA intercepts contextmenu and shows its own DOM-based menu (not the browser's)
+  bubble.dispatchEvent(new MouseEvent('contextmenu', coords));
+
+  const findMenuItem = async () => {
+    for (let i = 0; i < 5; i++) {
+      await sleep(300);
+      const item =
+        document.querySelector('[data-testid="mi-msg-reply"]') ||
+        [...document.querySelectorAll('[role="menuitem"]')].find(el =>
+          /^reply$/i.test(el.textContent.trim())
+        ) ||
+        [...document.querySelectorAll('li')].find(el =>
+          el.querySelector('[data-icon="reply"]') ||
+          /^reply$/i.test(el.textContent.trim())
+        );
+      if (item) return item;
+    }
+    return null;
   };
 
-  // --- Step 0: Re-trigger hover on the message so WA shows its action buttons ---
-  // (When mouse moved to our reply btn, WA hid its own buttons)
-  msgContainer.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-  msgContainer.dispatchEvent(new MouseEvent('mouseover',  { bubbles: true }));
-  // Also hover the bubble itself
-  const bubble = getBubbleEl(msgContainer);
-  if (bubble) {
-    bubble.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-    bubble.dispatchEvent(new MouseEvent('mouseover',  { bubbles: true }));
-  }
-  // Wait for WA to render its hover action buttons
-  await new Promise(res => setTimeout(res, 350));
+  const menuItem = await findMenuItem();
+  if (menuItem) { menuItem.click(); return; }
 
-  const allIconNames = Array.from(msgContainer.querySelectorAll('[data-icon]'))
-    .map(el => el.getAttribute('data-icon'));
-  console.log('[WA-Reply] Icons in message after hover:', allIconNames);
-
-  // --- Step 1: direct [data-icon="reply"] ---
-  const directReplyIcon = msgContainer.querySelector('[data-icon="reply"]');
-  if (directReplyIcon) {
-    console.log('[WA-Reply] Found direct reply icon');
-    const panel   = findHiddenPanel(directReplyIcon, msgContainer);
-    const restore = revealPanel(panel);
-    iconToBtn(directReplyIcon).click();
-    await new Promise(res => setTimeout(res, 100));
-    restore();
-    return;
-  }
-
-  // --- Step 2: find "More options" / dropdown button by every known icon name ---
-  const MORE_ICONS = ['down', 'msg-more', 'menu', 'message-more', 'chevron-down',
-                      'down-context', 'tail-out', 'tail-in'];
-  let moreIcon = null;
-  for (const name of MORE_ICONS) {
-    moreIcon = msgContainer.querySelector(`[data-icon="${name}"]`);
-    if (moreIcon) { console.log('[WA-Reply] Found more-icon:', name); break; }
-  }
-
-  // --- Step 3 (fallback): any button/span OUTSIDE the text bubble ---
-  if (!moreIcon) {
-    const extBtns = Array.from(msgContainer.querySelectorAll(
-      'button, [role="button"], span[data-icon]'
-    )).filter(b => !bubble?.contains(b));
-    console.log('[WA-Reply] Fallback — external buttons:', extBtns.length,
-      extBtns.map(b => b.getAttribute('data-icon') || b.getAttribute('data-testid') || b.tagName));
-    if (extBtns.length) moreIcon = extBtns[extBtns.length - 1];
-  }
-
-  if (!moreIcon) {
-    console.warn('[WA-Reply] No action button found — aborting');
-    return;
-  }
-
-  // Reveal hidden panel ancestor
-  const panel   = findHiddenPanel(moreIcon, msgContainer);
-  const restore = revealPanel(panel);
-  console.log('[WA-Reply] Clicking more-btn, panel hidden?', !!panel);
-
-  // Hover and click the more-options button
-  const moreEl = iconToBtn(moreIcon);
-  moreEl.dispatchEvent(new MouseEvent('mouseover',  { bubbles: true }));
-  moreEl.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-  await new Promise(res => setTimeout(res, 100));
-  moreEl.click();
-
-  // --- Step 4: wait for WA's dropdown, then click "Reply" ---
-  for (let attempt = 0; attempt < 4; attempt++) {
-    await new Promise(res => setTimeout(res, 350));
-
-    const replyItem =
-      document.querySelector('[data-testid="mi-msg-reply"]') ||
-      [...document.querySelectorAll(
-        '[role="menuitem"], [role="option"], [role="listitem"], li[tabindex], li[class]'
-      )].find(el => {
-        const t = el.textContent.trim().toLowerCase();
-        return t === 'reply' || t === 'responder' || t === 'répondre' || t === 'antworten';
-      });
-
-    if (replyItem) {
-      console.log('[WA-Reply] Reply item found on attempt', attempt + 1, replyItem.dataset?.testid);
-      replyItem.click();
-      restore();
-      return;
+  // ── Method 3: reveal + click "more options" chevron → pick Reply from dropdown ──
+  const MORE_ICONS = ['down', 'msg-more', 'menu', 'chevron-down', 'down-context', 'tail-out'];
+  for (const root of buildRoots()) {
+    for (const name of MORE_ICONS) {
+      const icon = root.querySelector(`[data-icon="${name}"]`);
+      if (!icon) continue;
+      const moreBtn = icon.closest('button, [role="button"]') || icon.parentElement;
+      if (!moreBtn) continue;
+      reveal(moreBtn);
+      moreBtn.click();
+      const dropReply = await findMenuItem();
+      if (dropReply) { dropReply.click(); return; }
+      break;
     }
-    console.log('[WA-Reply] Reply not found yet, attempt', attempt + 1);
+  }
+}
+
+// ─── Bulk Message Send (reliable Lexical editor input) ────────────────────────
+async function sendBulkMessage(text) {
+  if (findEl(SEL.qrCode)) return { success: false, error: 'Not logged in — scan QR first' };
+
+  // 1. Wait for the chat header — confirms the chat is fully open
+  const header = await waitForEl(['#main header', '#main [data-testid="conversation-header"]'], 12000);
+  if (!header) return { success: false, error: 'Chat did not open' };
+  await sleep(600);
+
+  // 2. Find compose box
+  const input =
+    document.querySelector('#main footer [data-lexical-editor="true"]') ||
+    document.querySelector('#main footer div[contenteditable="true"]') ||
+    document.querySelector('div[contenteditable="true"][data-tab="10"]');
+  if (!input) return { success: false, error: 'Compose box not found' };
+
+  // 3. Click + focus to activate
+  input.click();
+  input.focus();
+  await sleep(400);
+
+  // 4. Insert text with proper newline handling (Shift+Enter for line breaks)
+  await insertMessageText(input, text);
+  await sleep(400);
+
+  // 5. If nothing was inserted, fall back to paste event
+  if (!input.textContent?.trim()) {
+    try {
+      const dt = new DataTransfer();
+      dt.setData('text/plain', text);
+      input.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+      await sleep(400);
+    } catch (_) {}
   }
 
-  console.warn('[WA-Reply] Reply menu item never appeared');
-  restore();
+  // 6. Wait for the send button — it only appears when WA sees text in the box
+  const sendBtn = await waitForEl([
+    'button[data-testid="compose-btn-send"]',
+    '[data-testid="compose-btn-send"]',
+    '#main footer button[aria-label="Send"]',
+    '#main footer span[data-icon="send"]'
+  ], 6000);
+
+  if (!sendBtn) return { success: false, error: 'Send button not found — text was not accepted' };
+
+  await sleep(200);
+  sendBtn.click();
+  await sleep(800);
+  return { success: true };
 }
 
 // ─── Message Listener ─────────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'CLICK_SEND') {
     clickSend().then(sendResponse).catch(e => sendResponse({ success: false, error: e.message }));
+    return true;
+  }
+
+  if (msg.type === 'TYPE_AND_SEND') {
+    sendBulkMessage(msg.message).then(sendResponse).catch(e => sendResponse({ success: false, error: e.message }));
+    return true;
+  }
+
+  if (msg.type === 'SEND_WITH_IMAGE') {
+    sendImageWithCaption(msg.imageData, msg.imageMime, msg.imageName, msg.caption).then(sendResponse).catch(e => sendResponse({ success: false, error: e.message }));
+    return true;
+  }
+
+  if (msg.type === 'OPEN_AND_SEND') {
+    (async () => {
+      const nav = await openChatByPhone(msg.phone);
+      if (!nav.success) return sendResponse(nav);
+      if (msg.imageData) {
+        sendResponse(await sendImageWithCaption(msg.imageData, msg.imageMime, msg.imageName, msg.caption));
+      } else {
+        const ok = await typeAndSend(msg.message);
+        sendResponse({ success: !!ok });
+      }
+    })().catch(e => sendResponse({ success: false, error: e.message }));
+    return true;
+  }
+
+  if (msg.type === 'QUOTED_REPLY') {
+    (async () => {
+      // Wait for chat to fully load
+      const header = await waitForEl(['#main header', '#main [data-testid="conversation-header"]'], 12000);
+      if (!header) return sendResponse({ success: false, error: 'Chat did not open' });
+      await sleep(1000);
+
+      // Find the message container whose text matches the original incoming message
+      let targetMsg = null;
+      if (msg.originalText) {
+        const snippet = msg.originalText.trim().substring(0, 40).toLowerCase();
+        const containers = Array.from(document.querySelectorAll(
+          '[data-testid="msg-container"], .message-in, .message-out'
+        ));
+        // Search from bottom (most recent) upward
+        for (let i = containers.length - 1; i >= 0; i--) {
+          const txt = containers[i].textContent?.toLowerCase() || '';
+          if (txt.includes(snippet)) { targetMsg = containers[i]; break; }
+        }
+      }
+
+      if (targetMsg) {
+        // Trigger WA's native reply (quotes the message in compose bar)
+        await triggerNativeReply(targetMsg);
+        await sleep(800);
+      }
+
+      // Type reply and send
+      const ok = await sendBulkMessage(msg.replyMessage);
+      sendResponse({ success: !!ok });
+    })().catch(e => sendResponse({ success: false, error: e.message }));
     return true;
   }
 

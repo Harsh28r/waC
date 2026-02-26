@@ -1,1 +1,5 @@
-/* Reset handled in App.css */
+/* Global reset — handled in App.css */
+body {
+  margin: 0;
+  padding: 0;
+}

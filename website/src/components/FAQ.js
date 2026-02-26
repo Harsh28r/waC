@@ -7,7 +7,7 @@ const faqs = [
   },
   {
     q: 'Will my WhatsApp account get banned?',
-    a: "We use smart throttling, random delays, and human-like sending patterns to minimize any risk. Thousands of users rely on our extension daily without issues. We also recommend following WhatsApp's usage guidelines.",
+    a: "We use smart throttling, random delays, and human-like sending patterns to minimize any risk. Thousands of users rely on our extension daily without issues. We also recommend following WhatsApp\u2019s usage guidelines.",
   },
   {
     q: 'Do I need an API key or WhatsApp Business API?',
@@ -33,10 +33,10 @@ export default function FAQ() {
   return (
     <section className="faq" id="faq">
       <div className="text-center">
-        <div className="section-label" style={{ justifyContent: 'center' }}>❓ FAQ</div>
+        <div className="section-label" style={{ justifyContent: 'center', margin: '0 auto 14px' }}>FAQ</div>
         <h2 className="section-title">Frequently asked questions</h2>
         <p className="section-sub" style={{ margin: '0 auto' }}>
-          Got questions? We've got answers. Can't find what you need? Reach out to us.
+          Got questions? We&apos;ve got answers. Can&apos;t find what you need? Reach out to us.
         </p>
       </div>
 
@@ -45,7 +45,11 @@ export default function FAQ() {
           <div className={`faq-item ${openIdx === i ? 'open' : ''}`} key={i}>
             <button className="faq-q" onClick={() => setOpenIdx(openIdx === i ? -1 : i)}>
               {f.q}
-              <span className="faq-arrow">▾</span>
+              <span className="faq-arrow">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="6 9 12 15 18 9"/>
+                </svg>
+              </span>
             </button>
             <div className="faq-a">{f.a}</div>
           </div>
@@ -54,4 +58,3 @@ export default function FAQ() {
     </section>
   );
 }
-
