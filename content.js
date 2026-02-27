@@ -351,7 +351,7 @@ function setWAPrivacy(on) {
 
     const badge = document.createElement('div');
     badge.id = 'wa-prv-badge';
-    badge.textContent = '🔒 Privacy Mode ON';
+    badge.textContent = '🔒  ON';
     document.body.appendChild(badge);
 
     // Blur elements already in the DOM
@@ -1402,6 +1402,21 @@ function injectMeetingStyles() {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     }
     #wa-hover-reply.whr-visible:hover::after { opacity: 1; }
+
+    /* ── Chat Pin Button (sits next to WA's chevron-down button) ── */
+    .wa-pin-btn {
+      width: 20px; height: 20px;
+      background: none; border: none;
+      cursor: pointer; padding: 0;
+      color: #8696a0;
+      font-size: 14px; line-height: 20px;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+      opacity: 1;
+      pointer-events: all !important;
+    }
+    .wa-pin-btn.pinned { color: #d29922 !important; }
+    .wa-pin-btn:hover  { color: #00a884 !important; }
   `;
   document.head.appendChild(style);
 }
@@ -1773,6 +1788,9 @@ setInterval(() => {
     applyLabelFilter(currentLabelFilter);
     startLabelObserver();
   }
+  applyVirtualPins();
+  startVpinObserver();
+  injectChatPinButtons();
   injectAudioInterceptor();
 }, 400);
 
@@ -1967,6 +1985,69 @@ function startLabelObserver() {
 function stopLabelObserver() {
   if (labelObserver) { labelObserver.disconnect(); labelObserver = null; }
 }
+
+// ─── Virtual Pin (up to 8 pinned chats in WA Web list) ───────────────────────
+let vpinObserver   = null;
+let vpinDebounce   = null;
+
+function applyVirtualPins() {
+  const pane = document.querySelector('#pane-side');
+  if (!pane) return;
+
+  chrome.storage.local.get('pinnedChats', ({ pinnedChats = [] }) => {
+    // Remove stale badges first
+    pane.querySelectorAll('.wa-vpin-badge').forEach(b => b.remove());
+    if (!pinnedChats.length) return;
+
+    const rows = Array.from(pane.querySelectorAll('[data-testid="cell-frame-container"]'));
+    if (!rows.length) return;
+
+    const pinnedNames  = new Set(pinnedChats.map(p => (p.name  || '').toLowerCase().trim()));
+    const pinnedPhones = new Set(pinnedChats.map(p => (p.phone || '').replace(/\D/g, '')));
+
+    const matched = [];
+    rows.forEach(row => {
+      const nameEl    = row.querySelector('[data-testid="cell-frame-title"]');
+      const nameText  = (nameEl?.textContent || '').trim().toLowerCase();
+      const digits    = nameText.replace(/\D/g, '');
+      const isVPin    = pinnedNames.has(nameText) ||
+                        (digits.length >= 7 && pinnedPhones.has(digits));
+      if (!isVPin) return;
+
+      // Add 📌 badge
+      const badge = document.createElement('span');
+      badge.className = 'wa-vpin-badge';
+      badge.textContent = '📌';
+      badge.style.cssText = 'position:absolute;top:6px;right:6px;font-size:11px;z-index:2;pointer-events:none';
+      row.style.position = 'relative';
+      row.appendChild(badge);
+      matched.push(row);
+    });
+
+    // Move matched rows to the very top of the list
+    if (!matched.length) return;
+    const parent = rows[0].parentElement;
+    if (!parent) return;
+    // Insert in reverse so first pin ends up at top
+    [...matched].reverse().forEach(row => parent.insertBefore(row, parent.firstChild));
+  });
+}
+
+function startVpinObserver() {
+  if (vpinObserver) return;
+  const pane = document.querySelector('#pane-side');
+  if (!pane) return;
+  vpinObserver = new MutationObserver(() => {
+    clearTimeout(vpinDebounce);
+    vpinDebounce = setTimeout(applyVirtualPins, 350);
+  });
+  vpinObserver.observe(pane, { childList: true, subtree: true });
+}
+
+// Re-apply when pins change from sidepanel
+chrome.storage.onChanged.addListener(changes => {
+  if (changes.pinnedChats) applyVirtualPins();
+});
 
 // ─── Contact Card Panel ───────────────────────────────────────────────────────
 function closeCardPanel() {
@@ -2166,10 +2247,9 @@ function showReplyBtnFor(msgContainer) {
 
 function injectHoverReply() {
   ensureHoverReplyBtn();
+  // Bind to all messages — text, images, videos, stickers, documents, etc.
   document.querySelectorAll('[data-testid="msg-container"], .message-in, .message-out').forEach(c => {
     if (c.dataset.waHoverReplyBound) return;
-    // Bind to any message that has copyable text content
-    if (!c.querySelector('.selectable-text, .copyable-text')) return;
     c.dataset.waHoverReplyBound = '1';
 
     c.addEventListener('mouseenter', () => {
@@ -2184,19 +2264,91 @@ function injectHoverReply() {
   });
 }
 
+// ─── Chat Row Pin Button ──────────────────────────────────────────────────────
+
+async function tryNativePin(row) {
+  // Open WA's right-click context menu on the chat row
+  const r = row.getBoundingClientRect();
+  const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+  row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+  await sleep(400);
+
+  // Find "Pin chat" or "Unpin chat" in the menu
+  const PIN_SELS = [
+    '[data-testid="mi-msg-pin"]',
+    '[aria-label="Pin chat"]', '[aria-label="Unpin chat"]',
+    '[aria-label*="Pin"]',
+  ];
+  for (const sel of PIN_SELS) {
+    const item = document.querySelector(sel);
+    if (item) { item.click(); return; }
+  }
+  // Fallback: search menu items by text
+  const item = [...document.querySelectorAll('[role="menuitem"], li')]
+    .find(el => /^(pin|unpin)/i.test(el.textContent.trim()));
+  if (item) item.click();
+  // Dismiss menu if pin item not found
+  else document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+}
+
+function injectChatPinButtons() {
+  const pane = document.querySelector('#pane-side');
+  if (!pane) return;
+  pane.querySelectorAll('[data-testid="cell-frame-container"]').forEach(cell => {
+    if (cell.dataset.pinInjected) return;
+    // Find the chevron-down button WA shows on hover — inject our btn right before it
+    const chevron = cell.querySelector('span[data-icon="ic-chevron-down-menu"]')?.closest('button');
+    if (!chevron) return;
+    const nameEl = cell.querySelector('[data-testid="cell-frame-title"], span[title][dir="auto"]');
+    const name = nameEl?.textContent?.trim() || '';
+    if (!name) return;
+    cell.dataset.pinInjected = '1';
+    // Extract phone from WA's data-id (format: "12345678901@c.us")
+    const dataId = cell.dataset.id || '';
+    const phone = dataId.split('@')[0] || name.replace(/\D/g, '') || name;
+    const btn = document.createElement('button');
+    btn.className = 'wa-pin-btn'; btn.textContent = '📌'; btn.title = 'Pin chat';
+    // Insert right before the chevron so it sits in the same hover-visible container
+    chevron.parentElement.insertBefore(btn, chevron);
+    chrome.storage.local.get('pinnedChats', ({ pinnedChats = [] }) => {
+      if (pinnedChats.some(p => p.name.toLowerCase() === name.toLowerCase()))
+        btn.classList.add('pinned');
+    });
+    btn.addEventListener('click', e => {
+      e.stopPropagation(); e.preventDefault();
+      chrome.storage.local.get('pinnedChats', async ({ pinnedChats = [] }) => {
+        const n = nameEl?.textContent?.trim() || '';
+        const already = pinnedChats.some(p => p.name.toLowerCase() === n.toLowerCase());
+        if (already) {
+          await tryNativePin(cell.parentElement || cell);
+          pinnedChats = pinnedChats.filter(p => p.name.toLowerCase() !== n.toLowerCase());
+          btn.classList.remove('pinned'); btn.title = 'Pin chat';
+        } else {
+          if (pinnedChats.length >= 8) { btn.title = 'Max 8 pins!'; setTimeout(() => btn.title = 'Pin chat', 1500); return; }
+          if (pinnedChats.length < 3) await tryNativePin(cell.parentElement || cell);
+          pinnedChats.push({ phone, name: n });
+          btn.classList.add('pinned'); btn.title = 'Unpin';
+        }
+        chrome.storage.local.set({ pinnedChats });
+        applyVirtualPins();
+      });
+    });
+  });
+}
+
 async function triggerNativeReply(msgContainer) {
+  console.log('[WA-Reply] triggerNativeReply called');
   document.getElementById('wa-hover-reply')?.classList.remove('whr-visible');
 
   msgContainer.scrollIntoView({ block: 'center', behavior: 'instant' });
-  await sleep(250);
+  await sleep(200);
 
   const bubble = getBubbleEl(msgContainer) || msgContainer;
   const rect   = bubble.getBoundingClientRect();
-  const cx     = Math.round(rect.left + rect.width  / 2);
+  const cx     = Math.round(rect.left + rect.width / 2);
   const cy     = Math.round(rect.top  + rect.height / 2);
-  const coords = { bubbles: true, cancelable: true, clientX: cx, clientY: cy };
 
-  // Force-reveal a hidden element; return a restore fn
+  // ── Helpers ──
   const reveal = el => {
     if (!el) return () => {};
     const s = el.style;
@@ -2208,110 +2360,184 @@ async function triggerNativeReply(msgContainer) {
     return () => { s.opacity = prev.op; s.pointerEvents = prev.pe; s.visibility = prev.vis; s.display = prev.dis; };
   };
 
-  // Build a set of DOM roots to search — WA may put the action bar anywhere
-  // relative to the message: inside it, as a sibling, or in a parent
+  // Reveal an element AND all its ancestors up to root (WA hides parent containers too)
+  const revealChain = (el, stopAt) => {
+    const restores = [];
+    let node = el;
+    while (node && node !== stopAt && node !== document.body) {
+      const cs = getComputedStyle(node);
+      if (cs.opacity === '0' || cs.visibility === 'hidden' || cs.display === 'none' || cs.pointerEvents === 'none') {
+        restores.push(reveal(node));
+      }
+      node = node.parentElement;
+    }
+    return () => restores.forEach(r => r());
+  };
+
+  // Search roots: message container + ancestors + list-item wrapper
   const buildRoots = () => {
     const roots = new Set();
     let node = msgContainer;
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 6; i++) {
       if (!node) break;
       roots.add(node);
       node = node.parentElement;
     }
-    const listItem = msgContainer.closest('[data-testid^="list-item"], [data-id]');
-    if (listItem) roots.add(listItem);
+    for (const sel of ['[data-testid^="list-item"]', '[data-id]', '[class*="focusable-list-item"]']) {
+      const li = msgContainer.closest(sel);
+      if (li) { roots.add(li); if (li.parentElement) roots.add(li.parentElement); }
+    }
     return [...roots];
   };
 
   const REPLY_SELS = [
     '[data-testid="msg-action-reply"]',
-    '[aria-label="Reply"]',
-    '[aria-label*="eply"]',
-    '[data-icon="reply"]',
-    'button[title="Reply"]',
+    '[aria-label="Reply"]', '[aria-label*="eply"]',
+    '[data-icon="reply-refreshed"]', '[data-icon="reply"]',
+    'button[title="Reply"]', 'button[title*="eply"]',
   ];
 
-  // Look for reply button / action bar, avoiding quoting the *quoted message* widget
-  const findReplyBtn = (root) => {
+  const findReplyBtn = root => {
     for (const sel of REPLY_SELS) {
-      const btn = root.querySelector(sel);
-      // Skip buttons that are inside a quoted-message preview (already-quoted context)
-      if (btn && !btn.closest('[data-testid="quoted-msg"]')) return btn;
+      const el = root.querySelector(sel);
+      if (el && !el.closest('[data-testid="quoted-msg"]')) {
+        // If it's an icon, walk up to the clickable button
+        return el.closest('button, [role="button"]') || el;
+      }
     }
     return null;
   };
 
-  // ── Method 1: hover events → look for reply button in all ancestor roots ──
-  for (const target of [msgContainer, bubble]) {
-    target.dispatchEvent(new PointerEvent('pointerover',  { ...coords, pointerId: 1 }));
-    target.dispatchEvent(new PointerEvent('pointerenter', { ...coords, pointerId: 1, bubbles: false }));
-    target.dispatchEvent(new MouseEvent('mouseover',  coords));
-    target.dispatchEvent(new MouseEvent('mouseenter', { ...coords, bubbles: false }));
-  }
-  await sleep(500);
-
-  for (const root of buildRoots()) {
-    // Also try the explicit action bar child
-    const actionBar = root.querySelector('[data-testid="msg-action-bar"]');
-    for (const r of [root, actionBar].filter(Boolean)) {
-      const btn = findReplyBtn(r);
-      if (btn) {
-        const restore = reveal(btn);
-        btn.click();
-        await sleep(80);
-        restore();
-        return;
-      }
-    }
-    // Force-reveal action bar then retry
-    if (actionBar) {
-      const restore = reveal(actionBar);
-      await sleep(100);
-      const btn = findReplyBtn(actionBar);
-      if (btn) { btn.click(); restore(); return; }
-      restore();
-    }
-  }
-
-  // ── Method 2: contextmenu on bubble → click "Reply" in WA's popup menu ──
-  // WA intercepts contextmenu and shows its own DOM-based menu (not the browser's)
-  bubble.dispatchEvent(new MouseEvent('contextmenu', coords));
-
-  const findMenuItem = async () => {
-    for (let i = 0; i < 5; i++) {
-      await sleep(300);
+  // Find "Reply" in any open WA popup/context menu (multi-language)
+  const REPLY_RE = /^(reply|responder|répondre|antworten|rispondi|balas|ответить)$/i;
+  const findReplyMenuItem = async (maxWait = 5) => {
+    for (let i = 0; i < maxWait; i++) {
+      await sleep(250);
       const item =
         document.querySelector('[data-testid="mi-msg-reply"]') ||
-        [...document.querySelectorAll('[role="menuitem"]')].find(el =>
-          /^reply$/i.test(el.textContent.trim())
+        [...document.querySelectorAll('[role="menuitem"], [role="option"]')].find(el =>
+          REPLY_RE.test(el.textContent.trim())
         ) ||
-        [...document.querySelectorAll('li')].find(el =>
-          el.querySelector('[data-icon="reply"]') ||
-          /^reply$/i.test(el.textContent.trim())
+        [...document.querySelectorAll('li[tabindex], li[role]')].find(el =>
+          el.querySelector('[data-icon="reply-refreshed"], [data-icon="reply"]') ||
+          REPLY_RE.test(el.textContent.trim())
         );
       if (item) return item;
     }
     return null;
   };
 
-  const menuItem = await findMenuItem();
-  if (menuItem) { menuItem.click(); return; }
+  // ── Method 1: Dispatch hover events → wait for React to render action bar ──
+  console.log('[WA-Reply] Method 1: hover simulation');
+  const hoverOpts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy };
+  for (const target of [bubble, msgContainer]) {
+    // Pointer events (React 17+ listens to these)
+    target.dispatchEvent(new PointerEvent('pointerover',  { ...hoverOpts, pointerId: 1, pointerType: 'mouse', relatedTarget: document.body }));
+    target.dispatchEvent(new PointerEvent('pointerenter', { ...hoverOpts, pointerId: 1, pointerType: 'mouse', bubbles: false, relatedTarget: document.body }));
+    target.dispatchEvent(new PointerEvent('pointermove',  { ...hoverOpts, pointerId: 1, pointerType: 'mouse' }));
+    // Mouse events (fallback for older React)
+    target.dispatchEvent(new MouseEvent('mouseover',  { ...hoverOpts, relatedTarget: document.body }));
+    target.dispatchEvent(new MouseEvent('mouseenter', { ...hoverOpts, bubbles: false, relatedTarget: document.body }));
+    target.dispatchEvent(new MouseEvent('mousemove',  hoverOpts));
+  }
 
-  // ── Method 3: reveal + click "more options" chevron → pick Reply from dropdown ──
-  const MORE_ICONS = ['down', 'msg-more', 'menu', 'chevron-down', 'down-context', 'tail-out'];
+  // Wait & scan for the action bar to appear (React renders async)
+  for (let attempt = 0; attempt < 4; attempt++) {
+    await sleep(300);
+    for (const root of buildRoots()) {
+      const actionBar = root.querySelector('[data-testid="msg-action-bar"]');
+      for (const r of [actionBar, root].filter(Boolean)) {
+        const btn = findReplyBtn(r);
+        if (btn) {
+          console.log('[WA-Reply] M1: found reply btn', btn.outerHTML.slice(0, 80));
+          const restore = revealChain(btn, root);
+          btn.click();
+          await sleep(80);
+          restore();
+          return;
+        }
+      }
+      // Force-reveal the action bar and retry
+      if (actionBar) {
+        const restore = revealChain(actionBar, root);
+        await sleep(100);
+        const btn = findReplyBtn(actionBar);
+        if (btn) {
+          console.log('[WA-Reply] M1: found reply btn after reveal');
+          btn.click(); await sleep(80); restore(); return;
+        }
+        restore();
+      }
+    }
+  }
+
+  // ── Method 2: Find chevron/down arrow in action bar → click → Reply from dropdown ──
+  console.log('[WA-Reply] Method 2: chevron → dropdown');
+  const MORE_ICONS = ['down', 'down-context', 'chevron', 'chevron-down', 'msg-more', 'menu'];
   for (const root of buildRoots()) {
     for (const name of MORE_ICONS) {
       const icon = root.querySelector(`[data-icon="${name}"]`);
-      if (!icon) continue;
-      const moreBtn = icon.closest('button, [role="button"]') || icon.parentElement;
+      if (!icon || icon.closest('[data-testid="quoted-msg"]')) continue;
+      const moreBtn = icon.closest('button, [role="button"], span[data-testid]') || icon.parentElement;
       if (!moreBtn) continue;
-      reveal(moreBtn);
+
+      console.log('[WA-Reply] M2: clicking chevron', name);
+      const restore = revealChain(moreBtn, root);
+      moreBtn.dispatchEvent(new PointerEvent('pointerdown', { ...hoverOpts, pointerId: 1, pointerType: 'mouse' }));
+      moreBtn.dispatchEvent(new PointerEvent('pointerup',   { ...hoverOpts, pointerId: 1, pointerType: 'mouse' }));
       moreBtn.click();
-      const dropReply = await findMenuItem();
-      if (dropReply) { dropReply.click(); return; }
-      break;
+      await sleep(100);
+      restore();
+
+      const dropReply = await findReplyMenuItem(6);
+      if (dropReply) {
+        console.log('[WA-Reply] M2: clicking Reply menu item');
+        dropReply.click();
+        return;
+      }
+      // Close stale menu
+      document.body.click();
+      await sleep(100);
     }
   }
+
+  // ── Method 3: Right-click context menu → Reply ──
+  console.log('[WA-Reply] Method 3: context menu');
+  bubble.dispatchEvent(new MouseEvent('contextmenu', {
+    bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 2, buttons: 2
+  }));
+
+  const ctxReply = await findReplyMenuItem(6);
+  if (ctxReply) {
+    console.log('[WA-Reply] M3: clicking Reply from context menu');
+    ctxReply.click();
+    return;
+  }
+  // Close context menu
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+  await sleep(100);
+
+  // ── Method 4: Brute-force — find ANY element with reply icon/testid in entire msg row ──
+  console.log('[WA-Reply] Method 4: brute-force scan');
+  const row = msgContainer.closest('[data-testid^="conv-msg"], [class*="focusable-list-item"]') || msgContainer.parentElement?.parentElement;
+  if (row) {
+    // Force-reveal everything in the row that's hidden
+    const hiddenEls = row.querySelectorAll('[style*="opacity: 0"], [style*="visibility: hidden"], [style*="display: none"]');
+    const restores = [...hiddenEls].map(el => reveal(el));
+    await sleep(100);
+
+    const btn = findReplyBtn(row);
+    if (btn) {
+      console.log('[WA-Reply] M4: brute-force found reply btn');
+      btn.click();
+      await sleep(80);
+      restores.forEach(r => r());
+      return;
+    }
+    restores.forEach(r => r());
+  }
+
+  console.warn('[WA-Reply] All methods failed for message:', msgContainer.textContent?.slice(0, 50));
 }
 
 // ─── Bulk Message Send (reliable Lexical editor input) ────────────────────────
@@ -2396,21 +2622,55 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
-  if (msg.type === 'QUOTED_REPLY') {
+  if (msg.type === 'OPEN_CHAT_QUOTED') {
+    // Respond immediately so the message channel closes cleanly
+    sendResponse({ success: true });
+
+    // Do the work in the background (fire-and-forget)
     (async () => {
-      // Wait for chat to fully load
       const header = await waitForEl(['#main header', '#main [data-testid="conversation-header"]'], 12000);
-      if (!header) return sendResponse({ success: false, error: 'Chat did not open' });
+      if (!header) return;
       await sleep(1000);
 
-      // Find the message container whose text matches the original incoming message
+      if (msg.originalText) {
+        const snippet = msg.originalText.trim().substring(0, 40).toLowerCase();
+        const containers = Array.from(document.querySelectorAll(
+          '[data-testid="msg-container"], .message-in, .message-out'
+        ));
+        for (let i = containers.length - 1; i >= 0; i--) {
+          const txt = containers[i].textContent?.toLowerCase() || '';
+          if (txt.includes(snippet)) {
+            containers[i].scrollIntoView({ block: 'center', behavior: 'instant' });
+            await sleep(300);
+            containers[i].dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }));
+            await sleep(200);
+            const replyBtn = document.getElementById('wa-hover-reply');
+            if (replyBtn) {
+              replyBtn.click();
+            } else {
+              await triggerNativeReply(containers[i]);
+            }
+            break;
+          }
+        }
+      }
+    })().catch(e => console.warn('[WA] OPEN_CHAT_QUOTED:', e.message));
+    return false;
+  }
+
+  if (msg.type === 'QUOTED_REPLY') {
+    sendResponse({ success: true });
+    (async () => {
+      const header = await waitForEl(['#main header', '#main [data-testid="conversation-header"]'], 12000);
+      if (!header) return;
+      await sleep(1000);
+
       let targetMsg = null;
       if (msg.originalText) {
         const snippet = msg.originalText.trim().substring(0, 40).toLowerCase();
         const containers = Array.from(document.querySelectorAll(
           '[data-testid="msg-container"], .message-in, .message-out'
         ));
-        // Search from bottom (most recent) upward
         for (let i = containers.length - 1; i >= 0; i--) {
           const txt = containers[i].textContent?.toLowerCase() || '';
           if (txt.includes(snippet)) { targetMsg = containers[i]; break; }
@@ -2418,16 +2678,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
 
       if (targetMsg) {
-        // Trigger WA's native reply (quotes the message in compose bar)
         await triggerNativeReply(targetMsg);
         await sleep(800);
       }
 
-      // Type reply and send
-      const ok = await sendBulkMessage(msg.replyMessage);
-      sendResponse({ success: !!ok });
-    })().catch(e => sendResponse({ success: false, error: e.message }));
-    return true;
+      await sendBulkMessage(msg.replyMessage);
+    })().catch(e => console.warn('[WA] QUOTED_REPLY:', e.message));
+    return false;
   }
 
   if (msg.type === 'READ_LAST_MESSAGE') {
@@ -2472,4 +2729,535 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     sendResponse({ ready: true });
     return false;
   }
+});
+
+// ─── Pinned Chats Bar (injected into WhatsApp Web left panel) ─────────────────
+function renderPinnedBar() {
+  const bar = document.getElementById('wa-ext-pin-bar');
+  if (!bar) return;
+  chrome.storage.local.get('pinnedChats', ({ pinnedChats = [] }) => {
+    if (!pinnedChats.length) {
+      bar.innerHTML = '<span style="font-size:11px;color:#8696a0;padding:2px 4px">📌 No pinned chats — add from extension</span>';
+      return;
+    }
+    bar.innerHTML = pinnedChats.map(p => `
+      <div data-wa-pin="${escapeHtml(p.phone)}" style="display:inline-flex;align-items:center;gap:4px;background:#2a373f;border-radius:12px;padding:3px 8px 3px 6px;cursor:pointer;font-size:11px;color:#e9edef;max-width:120px;flex-shrink:0">
+        <span style="width:16px;height:16px;border-radius:50%;background:#00a884;color:#111b21;font-size:8px;font-weight:800;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0">${escapeHtml((p.name||p.phone)[0].toUpperCase())}</span>
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0">${escapeHtml(p.name||p.phone)}</span>
+        <span data-wa-unpin="${escapeHtml(p.phone)}" style="color:#8696a0;font-size:11px;flex-shrink:0;padding:0 2px;line-height:1">✕</span>
+      </div>`).join('');
+
+    bar.querySelectorAll('[data-wa-pin]').forEach(chip => {
+      chip.addEventListener('click', e => {
+        if (e.target.closest('[data-wa-unpin]')) return;
+        openChatByPhone(chip.dataset.waPin);
+      });
+    });
+
+    bar.querySelectorAll('[data-wa-unpin]').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        chrome.storage.local.get('pinnedChats', ({ pinnedChats = [] }) => {
+          chrome.storage.local.set({ pinnedChats: pinnedChats.filter(p => p.phone !== btn.dataset.waUnpin) });
+        });
+      });
+    });
+  });
+}
+
+function initPinnedBar() {
+  if (document.getElementById('wa-ext-pin-bar')) return;
+  const pane = document.querySelector('#pane-side');
+  if (!pane) return;
+  const bar = document.createElement('div');
+  bar.id = 'wa-ext-pin-bar';
+  bar.style.cssText = 'background:#111b21;border-bottom:1px solid #2a373f;padding:6px 10px;display:flex;flex-wrap:wrap;gap:5px;align-items:center;min-height:34px;box-sizing:border-box';
+  pane.insertBefore(bar, pane.firstChild);
+  renderPinnedBar();
+}
+
+// ─── Pin icon SVG (same as WA's native pin icon) ─────────────────────────────
+const _PIN_SVG = `<svg viewBox="0 0 20 20" height="20" width="20" preserveAspectRatio="xMidYMid meet" fill="none"><path d="M13.5 4.5V11L15.2708 12.7708C15.3403 12.8403 15.3958 12.9201 15.4375 13.0104C15.4792 13.1007 15.5 13.2014 15.5 13.3125V13.746C15.5 13.9597 15.4281 14.1388 15.2844 14.2833C15.1406 14.4278 14.9625 14.5 14.75 14.5H10.75V19.125C10.75 19.3375 10.6785 19.5156 10.5356 19.6594C10.3927 19.8031 10.2156 19.875 10.0044 19.875C9.79313 19.875 9.61458 19.8031 9.46875 19.6594C9.32292 19.5156 9.25 19.3375 9.25 19.125V14.5H5.25C5.0375 14.5 4.85938 14.4278 4.71563 14.2833C4.57188 14.1388 4.5 13.9597 4.5 13.746V13.3125C4.5 13.2014 4.52083 13.1007 4.5625 13.0104C4.60417 12.9201 4.65972 12.8403 4.72917 12.7708L6.5 11V4.5H6.25C6.0375 4.5 5.85938 4.42854 5.71563 4.28563C5.57188 4.14271 5.5 3.96563 5.5 3.75438C5.5 3.54313 5.57188 3.36458 5.71563 3.21875C5.85938 3.07292 6.0375 3 6.25 3H13.75C13.9625 3 14.1406 3.07146 14.2844 3.21437C14.4281 3.35729 14.5 3.53437 14.5 3.74562C14.5 3.95687 14.4281 4.13542 14.2844 4.28125C14.1406 4.42708 13.9625 4.5 13.75 4.5H13.5ZM6.625 13H13.375L12 11.625V4.5H8V11.625L6.625 13Z" fill="currentColor"></path></svg>`;
+
+function _getCurrentChatInfo() {
+  const name = document.querySelector('[data-testid="conversation-info-header-chat-title"]')?.textContent?.trim() || '';
+  if (!name) return null;
+  // Try to grab phone from subtitle (shown for contacts as "+91 98765 43210")
+  const subtitle = document.querySelector('[data-testid="conversation-info-header-subtitle"]')?.textContent?.trim() || '';
+  const phoneMatch = subtitle.match(/\+?[\d][\d\s\-]{7,}/);
+  const phone = phoneMatch ? phoneMatch[0].replace(/[\s\-]/g, '') : name;
+  return { name, phone };
+}
+
+function _updatePinHeaderBtn() {
+  const btn = document.getElementById('wa-ext-pin-btn');
+  if (!btn) return;
+  const info = _getCurrentChatInfo();
+  if (!info) return;
+  chrome.storage.local.get('pinnedChats', ({ pinnedChats = [] }) => {
+    const pinned = pinnedChats.some(p => p.name === info.name);
+    btn.style.color    = pinned ? '#00a884' : '#8696a0';
+    btn.dataset.pinned = pinned ? '1' : '';
+    btn.title = pinned ? 'Unpin from extension bar' : 'Pin to extension bar (up to 8)';
+  });
+}
+
+function initPinHeaderBtn() {
+  const info = _getCurrentChatInfo();
+  if (!info) return;
+
+  let btn = document.getElementById('wa-ext-pin-btn');
+  if (!btn) {
+    // Find the container that holds the action buttons in the chat header.
+    // Strategy: find any known button inside #main header, then use its parent.
+    // Try every known WA Web selector, then fall back to any button/role in header
+    const anchor =
+      document.querySelector('#main header [data-testid="menu"]') ||
+      document.querySelector('#main header [data-testid="search"]') ||
+      document.querySelector('#main header [data-testid="audio-call"]') ||
+      document.querySelector('#main header [data-testid="video-call"]') ||
+      document.querySelector('#main header [aria-label="Menu"]') ||
+      document.querySelector('#main header [aria-label="More options"]') ||
+      document.querySelector('#main header [aria-label="Search"]') ||
+      document.querySelector('#main header [aria-label="Voice call"]') ||
+      document.querySelector('#main header [aria-label="Video call"]') ||
+      document.querySelector('#main header button') ||
+      document.querySelector('#main header [role="button"]') ||
+      document.querySelector('#main header > div:last-child > span') ||
+      document.querySelector('#main header > div:last-child > div');
+
+    // Hard fallback: append directly onto the header itself
+    const container = anchor ? anchor.parentElement : document.querySelector('#main header');
+    if (!container) { console.log('[WA-PIN] no header found at all'); return; }
+    console.log('[WA-PIN] injecting pin btn, container:', container.tagName, container.className?.slice(0,50));
+
+    btn = document.createElement('button');
+    btn.id = 'wa-ext-pin-btn';
+    btn.style.cssText = 'background:none;border:none;cursor:pointer;color:#8696a0;padding:8px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;transition:color .2s;flex-shrink:0';
+    btn.innerHTML = _PIN_SVG;
+
+    btn.addEventListener('click', () => {
+      const cur = _getCurrentChatInfo();
+      if (!cur) return;
+      chrome.storage.local.get('pinnedChats', ({ pinnedChats = [] }) => {
+        const idx = pinnedChats.findIndex(p => p.name === cur.name);
+        if (idx >= 0) {
+          pinnedChats.splice(idx, 1);
+          chrome.storage.local.set({ pinnedChats });
+        } else {
+          if (pinnedChats.length >= 8) {
+            btn.style.color = '#f15c6d';
+            setTimeout(() => _updatePinHeaderBtn(), 1500);
+            return;
+          }
+          pinnedChats.push(cur);
+          chrome.storage.local.set({ pinnedChats });
+        }
+      });
+    });
+
+    if (anchor) container.insertBefore(btn, anchor);
+    else container.appendChild(btn);
+  }
+
+  _updatePinHeaderBtn();
+}
+
+// ─── Task Management Panel ────────────────────────────────────────────────────
+const TASK_PANEL_ID = 'wa-ext-task-panel';
+let _taskPanelFilter = 'today';
+
+function _localDateStr(d) {
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function _getTodayStr() { return _localDateStr(new Date()); }
+function _getTomorrowStr() { const d = new Date(); d.setDate(d.getDate() + 1); return _localDateStr(d); }
+
+function _taskDateStr(task) {
+  if (task.date === 'today') return _getTodayStr();
+  if (task.date === 'tomorrow') return _getTomorrowStr();
+  return task.date;
+}
+
+function _taskMatchesFilter(task, filter) {
+  if (filter === 'done') return task.done;
+  if (task.done) return false;
+  if (filter === 'today') return _taskDateStr(task) === _getTodayStr();
+  if (filter === 'tomorrow') return _taskDateStr(task) === _getTomorrowStr();
+  return true; // 'all'
+}
+
+function _genTaskId() {
+  return 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+
+function _setTaskAlarm(task) {
+  if (!task.time || task.done) { console.log('[WA-TASK] alarm skipped — no time or done', task.id); return; }
+  const dateStr = _taskDateStr(task);
+  const when = new Date(dateStr + 'T' + task.time + ':00').getTime();
+  console.log('[WA-TASK] alarm when:', new Date(when).toLocaleString(), '| now:', new Date().toLocaleString(), '| future?', when > Date.now());
+  if (when <= Date.now()) { console.log('[WA-TASK] alarm skipped — time already passed'); return; }
+  chrome.runtime.sendMessage({ type: 'SET_TASK_ALARM', data: { taskId: task.id, title: task.title, when } },
+    r => { console.log('[WA-TASK] alarm set response:', r, chrome.runtime.lastError?.message); });
+}
+
+function _cancelTaskAlarm(taskId) {
+  chrome.runtime.sendMessage({ type: 'CANCEL_TASK_ALARM', data: { taskId } }, () => void chrome.runtime.lastError);
+}
+
+function injectTaskStyles() {
+  if (document.getElementById('wa-task-styles')) return;
+  const s = document.createElement('style');
+  s.id = 'wa-task-styles';
+  s.textContent = `
+    #wa-ext-task-panel {
+      display: flex; flex-direction: column; flex: 1;
+      width: 100%; height: 100%; background: #0b141a;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      overflow: hidden; box-sizing: border-box;
+    }
+    #wa-ext-task-panel .wt-header { padding: 20px 20px 0; flex-shrink: 0; }
+    #wa-ext-task-panel .wt-title { font-size: 20px; font-weight: 700; color: #e9edef; margin: 0 0 14px; }
+    #wa-ext-task-panel .wt-tabs { display: flex; gap: 4px; margin-bottom: 14px; }
+    #wa-ext-task-panel .wt-tab {
+      padding: 5px 14px; border-radius: 14px; border: none;
+      background: #1f2c34; color: #8696a0; font-size: 12px; font-weight: 600;
+      cursor: pointer; transition: background .15s, color .15s;
+    }
+    #wa-ext-task-panel .wt-tab.active { background: #00a884; color: #fff; }
+    #wa-ext-task-panel .wt-tab:hover:not(.active) { background: #2a3942; color: #e9edef; }
+    #wa-ext-task-panel .wt-add-form {
+      padding: 0 20px 12px; flex-shrink: 0; border-bottom: 1px solid #1f2c34;
+    }
+    #wa-ext-task-panel .wt-form-row { display: flex; gap: 6px; margin-bottom: 6px; align-items: center; }
+    #wa-ext-task-panel .wt-input {
+      flex: 1; background: #1f2c34; border: 1px solid #2a3942; border-radius: 8px;
+      padding: 7px 10px; color: #e9edef; font-size: 13px; outline: none; min-width: 0;
+    }
+    #wa-ext-task-panel .wt-input:focus { border-color: #00a884; }
+    #wa-ext-task-panel .wt-select {
+      background: #1f2c34; border: 1px solid #2a3942; border-radius: 8px;
+      padding: 7px 8px; color: #e9edef; font-size: 12px; outline: none; cursor: pointer;
+    }
+    #wa-ext-task-panel .wt-select:focus { border-color: #00a884; }
+    #wa-ext-task-panel .wt-add-btn {
+      background: #00a884; border: none; border-radius: 8px; padding: 7px 16px;
+      color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; flex-shrink: 0;
+      transition: background .15s;
+    }
+    #wa-ext-task-panel .wt-add-btn:hover { background: #008f72; }
+    #wa-ext-task-panel .wt-list { flex: 1; overflow-y: auto; padding: 10px 20px 20px; }
+    #wa-ext-task-panel .wt-list::-webkit-scrollbar { width: 4px; }
+    #wa-ext-task-panel .wt-list::-webkit-scrollbar-track { background: transparent; }
+    #wa-ext-task-panel .wt-list::-webkit-scrollbar-thumb { background: #2a3942; border-radius: 4px; }
+    #wa-ext-task-panel .wt-empty { color: #8696a0; font-size: 13px; text-align: center; margin-top: 40px; }
+    #wa-ext-task-panel .wt-task-item {
+      display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px;
+      border-radius: 10px; background: #1f2c34; margin-bottom: 7px; transition: background .12s;
+    }
+    #wa-ext-task-panel .wt-task-item:hover { background: #2a3942; }
+    #wa-ext-task-panel .wt-task-cb {
+      width: 18px; height: 18px; border-radius: 50%; border: 2px solid #8696a0;
+      background: transparent; cursor: pointer; flex-shrink: 0; margin-top: 1px;
+      display: flex; align-items: center; justify-content: center; transition: border-color .15s, background .15s;
+    }
+    #wa-ext-task-panel .wt-task-cb.done { border-color: #00a884; background: #00a884; }
+    #wa-ext-task-panel .wt-task-cb.done::after {
+      content: ''; width: 8px; height: 5px;
+      border-left: 2px solid #fff; border-bottom: 2px solid #fff;
+      transform: rotate(-45deg) translate(1px, -1px); display: block;
+    }
+    #wa-ext-task-panel .wt-task-body { flex: 1; min-width: 0; }
+    #wa-ext-task-panel .wt-task-title { font-size: 13px; color: #e9edef; line-height: 1.4; word-break: break-word; }
+    #wa-ext-task-panel .wt-task-title.done { text-decoration: line-through; color: #8696a0; }
+    #wa-ext-task-panel .wt-task-meta { display: flex; align-items: center; gap: 5px; margin-top: 4px; flex-wrap: wrap; }
+    #wa-ext-task-panel .wt-badge { font-size: 10px; padding: 2px 7px; border-radius: 8px; font-weight: 600; }
+    #wa-ext-task-panel .wt-badge-date { background: #2a3942; color: #8696a0; }
+    #wa-ext-task-panel .wt-badge-time { background: #1a2c2a; color: #00a884; }
+    #wa-ext-task-panel .wt-badge-high   { background: #3d1a1a; color: #f28b82; }
+    #wa-ext-task-panel .wt-badge-medium { background: #2d2a14; color: #f9bc2a; }
+    #wa-ext-task-panel .wt-badge-low    { background: #1a2c1a; color: #57d17a; }
+    #wa-ext-task-panel .wt-task-actions { display: flex; gap: 2px; flex-shrink: 0; }
+    #wa-ext-task-panel .wt-action-btn {
+      background: none; border: none; cursor: pointer; padding: 5px; border-radius: 6px;
+      color: #8696a0; display: flex; align-items: center; justify-content: center;
+      transition: color .15s, background .15s; font-size: 13px; line-height: 1;
+    }
+    #wa-ext-task-panel .wt-action-btn:hover { background: #3b4a54; color: #e9edef; }
+    #wa-ext-task-panel .wt-action-btn.alarm-on { color: #00a884; }
+  `;
+  document.head.appendChild(s);
+}
+
+function renderTaskPanel() {
+  const panel = document.getElementById(TASK_PANEL_ID);
+  if (!panel) return;
+  const listEl = panel.querySelector('#wt-task-list');
+  if (!listEl) return;
+
+  chrome.storage.local.get('waTasks', ({ waTasks = [] }) => {
+    const tasks = waTasks.filter(t => _taskMatchesFilter(t, _taskPanelFilter));
+    if (!tasks.length) {
+      const labels = { today: 'today', tomorrow: 'tomorrow', all: 'pending', done: 'completed' };
+      listEl.innerHTML = `<div class="wt-empty">No ${labels[_taskPanelFilter] || _taskPanelFilter} tasks</div>`;
+      return;
+    }
+
+    tasks.sort((a, b) => {
+      const da = _taskDateStr(a) + (a.time || '99:99');
+      const db = _taskDateStr(b) + (b.time || '99:99');
+      return da < db ? -1 : da > db ? 1 : 0;
+    });
+
+    const today = _getTodayStr();
+    const tomorrow = _getTomorrowStr();
+
+    listEl.innerHTML = tasks.map(task => {
+      const dateStr = _taskDateStr(task);
+      const dateLbl = dateStr === today ? 'Today' : dateStr === tomorrow ? 'Tomorrow' : dateStr;
+      const prioMap  = { high: 'wt-badge-high', medium: 'wt-badge-medium', low: 'wt-badge-low' };
+      const prioLbl  = task.priority ? task.priority[0].toUpperCase() + task.priority.slice(1) : '';
+      const alarmTs  = task.time ? new Date(dateStr + 'T' + task.time + ':00').getTime() : 0;
+      const hasAlarm = !task.done && alarmTs > Date.now();
+      return `
+        <div class="wt-task-item" data-task-id="${task.id}">
+          <div class="wt-task-cb ${task.done ? 'done' : ''}" data-wt-toggle="${task.id}"></div>
+          <div class="wt-task-body">
+            <div class="wt-task-title ${task.done ? 'done' : ''}">${escapeHtml(task.title)}</div>
+            <div class="wt-task-meta">
+              <span class="wt-badge wt-badge-date">${dateLbl}</span>
+              ${task.time ? `<span class="wt-badge wt-badge-time">⏰ ${task.time}</span>` : ''}
+              ${prioLbl ? `<span class="wt-badge ${prioMap[task.priority] || ''}">${prioLbl}</span>` : ''}
+            </div>
+          </div>
+          <div class="wt-task-actions">
+            <button class="wt-action-btn${hasAlarm ? ' alarm-on' : ''}" data-wt-alarm="${task.id}" title="${hasAlarm ? 'Alarm set' : 'No alarm'}">🔔</button>
+            <button class="wt-action-btn" data-wt-del="${task.id}" title="Delete">🗑️</button>
+          </div>
+        </div>`;
+    }).join('');
+
+    listEl.querySelectorAll('[data-wt-toggle]').forEach(el => {
+      el.addEventListener('click', () => {
+        const id = el.dataset.wtToggle;
+        chrome.storage.local.get('waTasks', ({ waTasks = [] }) => {
+          const task = waTasks.find(t => t.id === id);
+          if (!task) return;
+          task.done = !task.done;
+          if (task.done) _cancelTaskAlarm(id);
+          else _setTaskAlarm(task);
+          chrome.storage.local.set({ waTasks });
+        });
+      });
+    });
+
+    listEl.querySelectorAll('[data-wt-del]').forEach(el => {
+      el.addEventListener('click', () => {
+        const id = el.dataset.wtDel;
+        _cancelTaskAlarm(id);
+        chrome.storage.local.get('waTasks', ({ waTasks = [] }) => {
+          chrome.storage.local.set({ waTasks: waTasks.filter(t => t.id !== id) });
+        });
+      });
+    });
+  });
+}
+
+function _isChatOpen() {
+  return !!(
+    document.getElementById('main') ||
+    document.querySelector('[data-testid="conversation-info-header-chat-title"]') ||
+    document.querySelector('[data-testid="conversation-compose-box-input"]') ||
+    document.querySelector('[data-testid="compose-btn-send"]') ||
+    document.querySelector('[data-testid="audio-input-send"]')
+  );
+}
+
+/**
+ * Find the WhatsApp intro / "Download WhatsApp for Windows" section.
+ * It lives in the RIGHT pane — never inside #pane-side (sidebar).
+ */
+function _findIntroSection() {
+  // Multiple strategies, most-specific first
+  // 1. WA's intro section has a known data-testid in some builds
+  const byTestId = document.querySelector('[data-testid="intro-md-beta-message"]');
+  if (byTestId) {
+    // Walk up to the nearest <section> or full-height container
+    let el = byTestId;
+    while (el && el.tagName !== 'SECTION' && el.parentElement) el = el.parentElement;
+    if (el?.tagName === 'SECTION' && !el.closest('#pane-side')) return el;
+  }
+  // 2. Any <section> NOT inside the sidebar
+  for (const sec of document.querySelectorAll('section')) {
+    if (sec.closest('#pane-side')) continue;  // skip sidebar sections
+    if (sec.closest('#main'))      continue;  // skip chat-view sections
+    if (sec.closest('#wa-ext-task-panel')) continue; // skip our own
+    return sec;
+  }
+  return null;
+}
+
+function initTaskPanel() {
+  if (document.getElementById(TASK_PANEL_ID)) { renderTaskPanel(); return; }
+  if (_isChatOpen()) return;
+
+  const section = _findIntroSection();
+  if (!section) { console.log('[WA-TASK] intro section not found'); return; }
+
+  injectTaskStyles();
+
+  // Hide the WA intro screen, insert task panel as sibling
+  section.style.display = 'none';
+  section.dataset.waTaskHidden = '1';    // flag so we can restore later
+
+  const parent = section.parentElement;
+  const panel = document.createElement('div');
+  panel.id = TASK_PANEL_ID;
+  // Fill the same space the intro section occupied
+  panel.style.cssText = `
+    display:flex; flex-direction:column; flex:1;
+    width:100%; height:100%;
+    background:#0b141a; overflow:hidden; z-index:10;
+  `;
+  panel.innerHTML = `
+    <div class="wt-header">
+      <div class="wt-title">📋 Tasks</div>
+      <div class="wt-tabs">
+        <button class="wt-tab${_taskPanelFilter === 'today'    ? ' active' : ''}" data-wt-filter="today">Today</button>
+        <button class="wt-tab${_taskPanelFilter === 'tomorrow' ? ' active' : ''}" data-wt-filter="tomorrow">Tomorrow</button>
+        <button class="wt-tab${_taskPanelFilter === 'all'      ? ' active' : ''}" data-wt-filter="all">All</button>
+        <button class="wt-tab${_taskPanelFilter === 'done'     ? ' active' : ''}" data-wt-filter="done">Done</button>
+      </div>
+    </div>
+    <div class="wt-add-form">
+      <div class="wt-form-row">
+        <input type="text" class="wt-input" id="wt-new-title" placeholder="New task…" autocomplete="off">
+        <button class="wt-add-btn" id="wt-add-btn">Add</button>
+      </div>
+      <div class="wt-form-row">
+        <select class="wt-select" id="wt-new-date">
+          <option value="today">Today</option>
+          <option value="tomorrow">Tomorrow</option>
+          <option value="custom">Custom…</option>
+        </select>
+        <input type="date" class="wt-input" id="wt-new-date-custom" style="display:none;max-width:150px">
+        <input type="time" class="wt-select" id="wt-new-time" title="Alarm time (optional)">
+        <select class="wt-select" id="wt-new-priority">
+          <option value="medium">Medium</option>
+          <option value="low">Low</option>
+          <option value="high">High</option>
+        </select>
+      </div>
+    </div>
+    <div class="wt-list" id="wt-task-list"></div>
+  `;
+
+  // Insert right after the hidden section (same position in parent)
+  section.insertAdjacentElement('afterend', panel);
+
+  // Tab switching
+  panel.querySelectorAll('[data-wt-filter]').forEach(tab => {
+    tab.addEventListener('click', () => {
+      _taskPanelFilter = tab.dataset.wtFilter;
+      panel.querySelectorAll('[data-wt-filter]').forEach(t =>
+        t.classList.toggle('active', t.dataset.wtFilter === _taskPanelFilter)
+      );
+      renderTaskPanel();
+    });
+  });
+
+  // Custom date toggle
+  const dateSelect = panel.querySelector('#wt-new-date');
+  const dateCustom = panel.querySelector('#wt-new-date-custom');
+  dateSelect.addEventListener('change', () => {
+    dateCustom.style.display = dateSelect.value === 'custom' ? '' : 'none';
+    if (dateSelect.value === 'custom' && !dateCustom.value) dateCustom.value = _getTodayStr();
+  });
+
+  // Add task
+  const doAddTask = () => {
+    const titleEl = panel.querySelector('#wt-new-title');
+    const title   = titleEl.value.trim();
+    if (!title) return;
+    const dateVal    = dateSelect.value === 'custom' ? (dateCustom.value || _getTodayStr()) : dateSelect.value;
+    const time       = panel.querySelector('#wt-new-time').value || '';
+    const priority   = panel.querySelector('#wt-new-priority').value || 'medium';
+    const task = { id: _genTaskId(), title, date: dateVal, time, priority, done: false, createdAt: Date.now() };
+    chrome.storage.local.get('waTasks', ({ waTasks = [] }) => {
+      waTasks.push(task);
+      chrome.storage.local.set({ waTasks }, () => {
+        _setTaskAlarm(task);
+        titleEl.value = '';
+      });
+    });
+  };
+
+  panel.querySelector('#wt-add-btn').addEventListener('click', doAddTask);
+  panel.querySelector('#wt-new-title').addEventListener('keydown', e => { if (e.key === 'Enter') doAddTask(); });
+
+  console.log('[WA-TASK] panel injected — replaced intro section');
+  renderTaskPanel();
+}
+
+function _removeTaskPanel() {
+  const p = document.getElementById(TASK_PANEL_ID);
+  if (p) p.remove();
+  // Restore any hidden intro sections
+  document.querySelectorAll('[data-wa-task-hidden="1"]').forEach(sec => {
+    sec.style.display = '';
+    delete sec.dataset.waTaskHidden;
+  });
+}
+
+function _syncTaskPanel() {
+  const chatOpen = _isChatOpen();
+  if (chatOpen) {
+    _removeTaskPanel();
+  } else if (!document.getElementById(TASK_PANEL_ID)) {
+    const sec = _findIntroSection();
+    console.log('[WA-TASK] _syncTaskPanel — chatOpen:', chatOpen, 'section:', !!sec, 'panel:', !!document.getElementById(TASK_PANEL_ID));
+    if (sec) initTaskPanel();
+  }
+}
+
+// ─── Single observer: re-inject pin bar + pin header button ──────────────────
+let _pinBtnLastChat = '';
+let _lastChatOpenState = null;
+const _pinBarObserver = new MutationObserver(() => {
+  // Re-inject bar if WA re-renders #pane-side
+  if (document.querySelector('#pane-side') && !document.getElementById('wa-ext-pin-bar')) {
+    initPinnedBar();
+  }
+  // Inject / refresh header pin button when chat opens or changes
+  const curChat = document.querySelector('[data-testid="conversation-info-header-chat-title"]')?.textContent?.trim() || '';
+  if (curChat && (!document.getElementById('wa-ext-pin-btn') || curChat !== _pinBtnLastChat)) {
+    _pinBtnLastChat = curChat;
+    initPinHeaderBtn();
+  }
+  // Task panel: remove when chat opens (state-change only)
+  const chatOpenNow = _isChatOpen();
+  if (_lastChatOpenState !== chatOpenNow) {
+    _lastChatOpenState = chatOpenNow;
+    if (chatOpenNow) {
+      _removeTaskPanel();
+      console.log('[WA-TASK] chat opened, panel removed');
+    }
+  }
+  // Continuously retry injection: no chat + intro section present + panel missing
+  if (!chatOpenNow && !document.getElementById(TASK_PANEL_ID)) {
+    const sec = _findIntroSection();
+    if (sec) {
+      console.log('[WA-TASK] injecting task panel (intro section found)');
+      initTaskPanel();
+    }
+  }
+});
+_pinBarObserver.observe(document.body, { childList: true, subtree: true });
+initPinnedBar();
+console.log('[WA-TASK] content script ready — observer active');
+
+// Live-sync: update both bar, header button, and task list when storage changes
+chrome.storage.onChanged.addListener(changes => {
+  if (changes.pinnedChats) { renderPinnedBar(); _updatePinHeaderBtn(); }
+  if (changes.waTasks)     { renderTaskPanel(); }
 });

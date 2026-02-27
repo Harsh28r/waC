@@ -477,6 +477,22 @@ code{background:#21262d;padding:1px 5px;border-radius:3px;font-family:'SF Mono',
   canvas{page-break-inside:avoid}
 }
 
+/* ── Pinned Chats Strip ────────────────────────────────────────── */
+.pinned-strip{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:8px 10px}
+.pin-input{font-size:11px;padding:5px 8px;height:28px}
+.pinned-strip-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#8b949e;margin-bottom:6px;display:flex;align-items:center;gap:6px}
+.pinned-count{background:#21262d;border-radius:8px;padding:1px 6px;font-size:10px;color:#8b949e;font-weight:600;letter-spacing:0}
+.pinned-chip-list{display:flex;flex-wrap:wrap;gap:5px}
+.pinned-chip{display:inline-flex;align-items:center;gap:5px;background:#21262d;border:1px solid #30363d;border-radius:20px;padding:4px 10px 4px 8px;font-size:11px;font-weight:600;color:#c9d1d9;cursor:pointer;transition:all .15s;max-width:130px}
+.pinned-chip:hover{border-color:#25D366;background:rgba(37,211,102,.08);color:#25D366}
+.pinned-chip-avatar{width:18px;height:18px;border-radius:50%;background:#25D366;color:#0d1117;font-size:9px;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.pinned-chip-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+.pinned-chip-remove{background:none;border:none;color:#484f58;cursor:pointer;padding:0;font-size:12px;line-height:1;flex-shrink:0;transition:color .15s}
+.pinned-chip-remove:hover{color:#f85149}
+.pin-btn{background:none;border:none;cursor:pointer;padding:2px 4px;border-radius:4px;font-size:14px;line-height:1;transition:opacity .15s;flex-shrink:0;opacity:.25}
+.pin-btn:hover{opacity:.75}
+.pin-btn.pinned{opacity:1}
+
 /* ── Scrollbar ─────────────────────────────────────────────────── */
 ::-webkit-scrollbar{width:4px}
 ::-webkit-scrollbar-track{background:transparent}

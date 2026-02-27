@@ -56,6 +56,10 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     handleMeetingAlert(alarm.name).catch(console.error);
   }
 
+  if (alarm.name.startsWith('task-')) {
+    handleTaskAlarm(alarm.name).catch(console.error);
+  }
+
   if (alarm.name.startsWith('followup-')) {
     const phone = alarm.name.replace('followup-', '');
     const stored = await chrome.storage.local.get('contacts');
@@ -83,6 +87,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     QUICK_SEND:          () => quickSend(msg.data),
     SCAN_REPLIES:        () => scanReplies(msg.data),
     SEND_REPLY:          () => sendReplyToContact(msg.data),
+    OPEN_CHAT_QUOTED:    () => openChatQuoted(msg.data),
+    OPEN_CHAT:           () => openChat(msg.data),
     GENERATE_AI_REPLY:   () => generateAIReply(msg.data.replyText, msg.data.contactName, msg.data.apiKey),
     SCHEDULE_CAMPAIGN:   () => scheduleCampaign(msg.data),
     GET_ANALYTICS:       () => getAnalytics(),
@@ -108,6 +114,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     GET_MEETINGS:           () => getMeetings(),
     DELETE_MEETING:         () => deleteMeeting(msg.data),
     TRANSLATE_TEXT:         () => translateText(msg.data),
+    SET_TASK_ALARM:         () => setTaskAlarm(msg.data),
+    CANCEL_TASK_ALARM:      () => cancelTaskAlarm(msg.data),
   };
 
   if (async_handlers[msg.type]) {
@@ -385,6 +393,34 @@ async function sendReplyToContact(data) {
     type: 'QUOTED_REPLY',
     originalText: originalText || '',
     replyMessage: message
+  }, 4);
+  return response || { success: false, error: 'No response from WA page' };
+}
+
+// ─── Open Chat (navigate only, no send) ──────────────────────────────────────
+async function openChat(data) {
+  const phoneClean = (data.phone || '').replace(/[^0-9]/g, '');
+  if (!phoneClean) return { success: false, error: 'Invalid phone' };
+  const tabId = await findOrCreateWATab();
+  await chrome.tabs.update(tabId, { url: `https://web.whatsapp.com/send?phone=${phoneClean}`, active: true });
+  return { success: true };
+}
+
+// ─── Open Chat & Quote (no auto-send) ────────────────────────────────────────
+async function openChatQuoted(data) {
+  const { phone, originalText } = data;
+
+  const tabId = await findOrCreateWATab();
+  const phoneClean = phone.replace(/[^0-9]/g, '');
+  const url = `https://web.whatsapp.com/send?phone=${phoneClean}`;
+  await chrome.tabs.update(tabId, { url, active: true });
+  await sleep(800);
+  await waitForTabLoad(tabId);
+  await sleep(5000);
+
+  const response = await sendMessageToTab(tabId, {
+    type: 'OPEN_CHAT_QUOTED',
+    originalText: originalText || ''
   }, 4);
   return response || { success: false, error: 'No response from WA page' };
 }
@@ -1027,6 +1063,33 @@ async function transcribeAudio({ base64, mimeType }) {
   } catch (e) {
     return { success: false, error: e.message };
   }
+}
+
+// ─── Task Alarms ──────────────────────────────────────────────────────────────
+async function setTaskAlarm({ taskId, title, when }) {
+  await chrome.alarms.create('task-' + taskId, { when });
+  console.log('[WA] Task alarm set:', taskId, new Date(when).toLocaleString());
+  return { success: true };
+}
+
+async function cancelTaskAlarm({ taskId }) {
+  await chrome.alarms.clear('task-' + taskId);
+  return { success: true };
+}
+
+async function handleTaskAlarm(alarmName) {
+  const taskId = alarmName.replace('task-', '');
+  const { waTasks = [] } = await chrome.storage.local.get('waTasks');
+  const task = waTasks.find(t => t.id === taskId);
+  if (!task || task.done) return;
+  chrome.notifications.create('task-notif-' + taskId, {
+    type: 'basic',
+    iconUrl: 'icons/icon48.png',
+    title: '⏰ Task Reminder — WA Bulk AI',
+    message: task.title,
+    priority: 2
+  });
+  console.log('[WA] Task alarm fired:', task.title);
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

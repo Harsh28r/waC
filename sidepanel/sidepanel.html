@@ -23,16 +23,6 @@
     </div>
   </div>
 
-  <!-- ── Privacy Overlay ──────────────────────────────────────── -->
-  <div class="privacy-overlay" id="privacyOverlay" style="display:none">
-    <div class="privacy-lock-icon">🔒</div>
-    <div class="privacy-lock-text">Privacy Mode On</div>
-    <div class="privacy-lock-sub">Data is hidden. Click the 👁️ button to reveal.</div>
-  </div>
-
-  <!-- ── Privacy Strip ───────────────────────────────────────── -->
-  <div class="privacy-strip" id="privacyStrip">🔒 PRIVACY MODE — Data blurred. Hover items to peek.</div>
-
   <!-- ── Tab Bar ──────────────────────────────────────────────── -->
   <div class="tab-bar">
     <button class="tab active" data-tab="contacts">📋 Contacts</button>
@@ -54,6 +44,17 @@
          CONTACTS TAB
          ════════════════════════════════════════════════ -->
     <div class="panel active" id="panel-contacts">
+
+      <!-- ── Quick Pin ──────────────────────────────────────── -->
+      <div class="pinned-strip mb-10">
+        <div class="pinned-strip-label">📌 Quick Pin <span id="pinnedCount" class="pinned-count">0/8</span></div>
+        <div class="row gap-6 mb-6">
+          <input type="text" id="pin-name"  class="input pin-input" placeholder="Name (optional)">
+          <input type="text" id="pin-phone" class="input pin-input" placeholder="Phone (+91...)">
+          <button class="btn btn-outline btn-sm" id="pinAddBtn">Pin</button>
+        </div>
+        <div id="pinnedChipList" class="pinned-chip-list"></div>
+      </div>
 
       <div class="upload-box" id="uploadBox">
         <div class="upload-icon">📂</div>

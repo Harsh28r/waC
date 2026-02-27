@@ -6,13 +6,25 @@ let results     = [];
 let replies     = [];
 let isRunning   = false;
 let privacyOn   = false;
+let pinnedChats = [];   // max 8 virtual pinned chats
+const PIN_MAX   = 8;
 let settings    = { apiKey: '', openaiApiKey: '', aiEnabled: false, minDelay: 15, maxDelay: 45, dailyLimit: 100, stealthMode: false, autoPrivacy: false };
 
+// ─── Suppress "message channel closed" runtime.lastError warnings ─────────────
+// MV3 service workers can terminate before responding; this wrapper ensures
+// chrome.runtime.lastError is always read so Chrome doesn't log it as unchecked.
+{
+  const _orig = chrome.runtime.sendMessage.bind(chrome.runtime);
+  chrome.runtime.sendMessage = function(msg, cb) {
+    return _orig(msg, cb
+      ? function(...a) { cb(...a); void chrome.runtime.lastError; }
+      : function()     { void chrome.runtime.lastError; });
+  };
+}
+
 // ─── Privacy Mode ─────────────────────────────────────────────────────────────
-const privacyBtn     = document.getElementById('privacyBtn');
-const privacyOverlay = document.getElementById('privacyOverlay');
-const privacyStrip   = document.getElementById('privacyStrip');
-const app            = document.querySelector('.app');
+const privacyBtn = document.getElementById('privacyBtn');
+const app        = document.querySelector('.app');
 
 // Load saved privacy state
 chrome.storage.local.get('privacyOn', d => {
@@ -36,16 +48,13 @@ function setPrivacy(on) {
   if (on) {
     app.classList.add('privacy-mode');
     privacyBtn.classList.add('active');
+    privacyBtn.textContent = '🔒';
     privacyBtn.title = 'Privacy ON — Click to reveal (Ctrl+Shift+H)';
-    privacyStrip.classList.add('visible');
-    privacyOverlay.style.display = 'flex';
-    setTimeout(() => { privacyOverlay.style.display = 'none'; }, 1800);
   } else {
     app.classList.remove('privacy-mode');
     privacyBtn.classList.remove('active');
+    privacyBtn.textContent = '👁️';
     privacyBtn.title = 'Toggle Privacy Mode (Ctrl+Shift+H)';
-    privacyStrip.classList.remove('visible');
-    privacyOverlay.style.display = 'none';
   }
 
   // Also blur/unblur WhatsApp Web tab itself
@@ -57,11 +66,12 @@ function setPrivacy(on) {
 }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
-chrome.storage.local.get(['contacts','settings','results','replies'], (d) => {
-  if (d.contacts) { contacts = d.contacts.map(c => crmDefaults(c)); renderContacts(); }
-  if (d.settings) { settings = { ...settings, ...d.settings }; applySettings(); }
-  if (d.results)  { results  = d.results;  renderLastResults(); }
-  if (d.replies)  { replies  = d.replies;  renderReplies(); }
+chrome.storage.local.get(['contacts','settings','results','replies','pinnedChats'], (d) => {
+  if (d.contacts)    { contacts    = d.contacts.map(c => crmDefaults(c)); renderContacts(); }
+  if (d.settings)    { settings    = { ...settings, ...d.settings }; applySettings(); }
+  if (d.results)     { results     = d.results;  renderLastResults(); }
+  if (d.replies)     { replies     = d.replies;  renderReplies(); }
+  if (d.pinnedChats) { pinnedChats = d.pinnedChats; renderPinnedChats(); }
 });
 
 chrome.storage.local.get('campaignProgress', (d) => {
@@ -211,6 +221,7 @@ function contactCardHTML(c, i) {
         ${fuDate ? `<div class="followup-badge${fuOverdue?' overdue':''}">⏰ ${fuOverdue?'Overdue! ':'Follow-up: '}${fuDate.toLocaleDateString()}</div>` : ''}
       </div>
       <div class="card-right">
+        <button class="pin-btn${isPinned(c.phone)?' pinned':''}" data-pin="${i}" title="${isPinned(c.phone)?'Unpin':'Pin chat'}">📌</button>
         <button class="expand-btn${expanded?' open':''}" data-expand="${i}">▾</button>
         <button class="remove-btn" data-remove="${i}">✕</button>
       </div>
@@ -261,6 +272,64 @@ function contactCardHTML(c, i) {
   </div>`;
 }
 
+// ─── Pinned Chats ─────────────────────────────────────────────────────────────
+function isPinned(phone) { return pinnedChats.some(p => p.phone === phone); }
+
+function pinChat(contact) {
+  if (pinnedChats.length >= PIN_MAX) return showToast(`Max ${PIN_MAX} pins reached`, 'err');
+  if (isPinned(contact.phone)) return;
+  pinnedChats.push({ phone: contact.phone, name: contact.name || contact.phone });
+  chrome.storage.local.set({ pinnedChats });
+  renderPinnedChats(); renderContacts();
+  showToast(`📌 Pinned ${contact.name || contact.phone}`);
+}
+
+function unpinChat(phone) {
+  pinnedChats = pinnedChats.filter(p => p.phone !== phone);
+  chrome.storage.local.set({ pinnedChats });
+  renderPinnedChats(); renderContacts();
+}
+
+function renderPinnedChats() {
+  const list  = document.getElementById('pinnedChipList');
+  const count = document.getElementById('pinnedCount');
+  count.textContent = `${pinnedChats.length}/${PIN_MAX}`;
+  list.innerHTML = pinnedChats.map(p => `
+    <div class="pinned-chip" data-pin-open="${esc(p.phone)}" title="Open chat: ${esc(p.name)}">
+      <div class="pinned-chip-avatar">${(p.name||p.phone)[0].toUpperCase()}</div>
+      <span class="pinned-chip-name">${esc(p.name||p.phone)}</span>
+      <button class="pinned-chip-remove" data-pin-remove="${esc(p.phone)}" title="Unpin">✕</button>
+    </div>`).join('');
+
+  list.querySelectorAll('[data-pin-remove]').forEach(btn => {
+    btn.addEventListener('click', e => { e.stopPropagation(); unpinChat(btn.dataset.pinRemove); });
+  });
+  list.querySelectorAll('[data-pin-open]').forEach(chip => {
+    chip.addEventListener('click', e => {
+      if (e.target.closest('[data-pin-remove]')) return;
+      const phone = chip.dataset.pinOpen;
+      chrome.runtime.sendMessage({ type: 'OPEN_CHAT', data: { phone } });
+      showToast('Opening chat…');
+    });
+  });
+}
+
+// ─── Manual Quick-Pin handler ─────────────────────────────────────────────────
+document.getElementById('pinAddBtn').addEventListener('click', () => {
+  const nameEl  = document.getElementById('pin-name');
+  const phoneEl = document.getElementById('pin-phone');
+  const phone   = phoneEl.value.trim().replace(/[^0-9+]/g, '');
+  const name    = nameEl.value.trim() || phone;
+  if (!phone) return showToast('Enter a phone number to pin', 'err');
+  pinChat({ name, phone });
+  nameEl.value = '';
+  phoneEl.value = '';
+});
+
+document.getElementById('pin-phone').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('pinAddBtn').click();
+});
+
 function renderContacts() {
   document.getElementById('contactCount').textContent = `${contacts.length} contact${contacts.length !== 1 ? 's' : ''}`;
   const list = document.getElementById('contactList');
@@ -280,6 +349,17 @@ function attachContactListEvents() {
       const i = +el.dataset.expand;
       if (expandedSet.has(i)) expandedSet.delete(i); else expandedSet.add(i);
       renderContacts();
+    });
+  });
+
+  // Pin / unpin contact
+  list.querySelectorAll('[data-pin]').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const i = +btn.dataset.pin;
+      const c = contacts[i];
+      if (isPinned(c.phone)) unpinChat(c.phone);
+      else pinChat(c);
     });
   });
 
@@ -614,7 +694,14 @@ function renderReplies() {
   }
 
   list.innerHTML = replies.map((r, i) => `
-    <div class="reply-row card-list" style="max-height:none;border-radius:8px;margin-bottom:8px">
+    <div class="reply-row card-list" style="max-height:none;border-radius:8px;margin-bottom:8px;position:relative">
+      <div class="reply-hover-actions">
+        ${r.aiSuggestion ? `<div class="hover-suggestion">${esc(r.aiSuggestion.substring(0,80))}${r.aiSuggestion.length>80?'…':''}</div>` : ''}
+        <div class="hover-actions-row">
+          <button class="btn btn-green btn-sm" data-i="${i}" data-action="open">💬 Open Chat</button>
+          <button class="btn btn-outline btn-sm" data-i="${i}" data-action="skip">Dismiss</button>
+        </div>
+      </div>
       <div class="reply-header">
         <div class="avatar blue">${(r.contact||r.phone||'?')[0].toUpperCase()}</div>
         <div class="reply-contact-name">${esc(r.contact||r.phone)}</div>
@@ -634,6 +721,7 @@ function renderReplies() {
         </div>
       ` : `
         <div class="reply-actions">
+          <button class="btn btn-outline btn-sm" data-i="${i}" data-action="open">💬 Open Chat</button>
           <button class="btn btn-outline btn-sm" data-i="${i}" data-action="skip">Dismiss</button>
         </div>
       `}
@@ -649,6 +737,12 @@ function renderReplies() {
         chrome.runtime.sendMessage({ type: 'SEND_REPLY', data: { phone: replies[i].phone, message: msg, originalText: replies[i].replyText } }, resp => {
           if (resp?.success) { replies.splice(i, 1); chrome.storage.local.set({ replies }); renderReplies(); showToast('Reply sent!'); }
           else { btn.disabled = false; btn.textContent = '✓ Send Reply'; showToast('Send failed: ' + resp?.error, 'err'); }
+        });
+      } else if (btn.dataset.action === 'open') {
+        btn.disabled = true; btn.textContent = '⏳';
+        chrome.runtime.sendMessage({ type: 'OPEN_CHAT_QUOTED', data: { phone: replies[i].phone, originalText: replies[i].replyText } }, resp => {
+          btn.disabled = false; btn.textContent = '💬 Open Chat';
+          if (!resp?.success) showToast('Could not open chat: ' + (resp?.error || 'unknown'), 'err');
         });
       } else {
         replies.splice(i, 1); chrome.storage.local.set({ replies }); renderReplies();
