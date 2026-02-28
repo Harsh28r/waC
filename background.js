@@ -89,6 +89,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     SEND_REPLY:          () => sendReplyToContact(msg.data),
     OPEN_CHAT_QUOTED:    () => openChatQuoted(msg.data),
     OPEN_CHAT:           () => openChat(msg.data),
+    OPEN_CHAT_BY_NAME:   () => openChatByName(msg.data),
     GENERATE_AI_REPLY:   () => generateAIReply(msg.data.replyText, msg.data.contactName, msg.data.apiKey),
     SCHEDULE_CAMPAIGN:   () => scheduleCampaign(msg.data),
     GET_ANALYTICS:       () => getAnalytics(),
@@ -404,6 +405,14 @@ async function openChat(data) {
   const tabId = await findOrCreateWATab();
   await chrome.tabs.update(tabId, { url: `https://web.whatsapp.com/send?phone=${phoneClean}`, active: true });
   return { success: true };
+}
+
+// ─── Open Chat by Name (groups / chats without phone number) ─────────────────
+async function openChatByName(data) {
+  const tabId = await findOrCreateWATab();
+  await chrome.tabs.update(tabId, { active: true });
+  const response = await sendMessageToTab(tabId, { type: 'OPEN_CHAT_BY_NAME', data }, 4);
+  return response || { success: false, error: 'No response from WA page' };
 }
 
 // ─── Open Chat & Quote (no auto-send) ────────────────────────────────────────

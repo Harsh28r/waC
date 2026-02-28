@@ -6,8 +6,8 @@ let results     = [];
 let replies     = [];
 let isRunning   = false;
 let privacyOn   = false;
-let pinnedChats = [];   // max 8 virtual pinned chats
-const PIN_MAX   = 8;
+let pinnedChats = [];   // max 6 virtual pinned chats
+const PIN_MAX   = 6;
 let settings    = { apiKey: '', openaiApiKey: '', aiEnabled: false, minDelay: 15, maxDelay: 45, dailyLimit: 100, stealthMode: false, autoPrivacy: false };
 
 // ─── Suppress "message channel closed" runtime.lastError warnings ─────────────
@@ -295,7 +295,7 @@ function renderPinnedChats() {
   const count = document.getElementById('pinnedCount');
   count.textContent = `${pinnedChats.length}/${PIN_MAX}`;
   list.innerHTML = pinnedChats.map(p => `
-    <div class="pinned-chip" data-pin-open="${esc(p.phone)}" title="Open chat: ${esc(p.name)}">
+    <div class="pinned-chip" data-pin-open="${esc(p.phone)}" data-pin-name="${esc(p.name||p.phone)}" data-is-group="${p.isGroup?'1':'0'}" title="Open chat: ${esc(p.name)}${p.isGroup?' (Group)':''}">
       <div class="pinned-chip-avatar">${(p.name||p.phone)[0].toUpperCase()}</div>
       <span class="pinned-chip-name">${esc(p.name||p.phone)}</span>
       <button class="pinned-chip-remove" data-pin-remove="${esc(p.phone)}" title="Unpin">✕</button>
@@ -307,8 +307,12 @@ function renderPinnedChats() {
   list.querySelectorAll('[data-pin-open]').forEach(chip => {
     chip.addEventListener('click', e => {
       if (e.target.closest('[data-pin-remove]')) return;
-      const phone = chip.dataset.pinOpen;
-      chrome.runtime.sendMessage({ type: 'OPEN_CHAT', data: { phone } });
+      const isGroup = chip.dataset.isGroup === '1';
+      if (isGroup) {
+        chrome.runtime.sendMessage({ type: 'OPEN_CHAT_BY_NAME', data: { name: chip.dataset.pinName } });
+      } else {
+        chrome.runtime.sendMessage({ type: 'OPEN_CHAT', data: { phone: chip.dataset.pinOpen } });
+      }
       showToast('Opening chat…');
     });
   });
@@ -978,7 +982,15 @@ chrome.runtime.onMessage.addListener(msg => {
   if (msg.type === 'PROGRESS')       handleProgress(msg.data);
   if (msg.type === 'AUTO_REPLY_LOG') addArLogEntry(msg.data);
 });
-chrome.storage.onChanged.addListener(changes => { if (changes.campaignProgress) handleProgress(changes.campaignProgress.newValue); });
+chrome.storage.onChanged.addListener(changes => {
+  if (changes.campaignProgress) handleProgress(changes.campaignProgress.newValue);
+  // Sync pins added/removed from the WA Web sidebar pin buttons
+  if (changes.pinnedChats) {
+    pinnedChats = changes.pinnedChats.newValue || [];
+    renderPinnedChats();
+    renderContacts();
+  }
+});
 
 function handleProgress(data) {
   if (!data) return;

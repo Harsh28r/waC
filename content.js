@@ -175,6 +175,41 @@ async function openChatByPhone(phone) {
   return { success: true };
 }
 
+// ─── Open Chat by Name (groups + contacts via sidebar search) ─────────────────
+async function openChatByName(name) {
+  if (findEl(SEL.qrCode)) return { success: false, error: 'WA Web not logged in — scan QR first' };
+
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
+  await sleep(400);
+
+  const searchInput = await waitForEl(SEL.searchInput, 6000);
+  if (!searchInput) return { success: false, error: 'Search input not found' };
+
+  searchInput.focus();
+  document.execCommand('selectAll', false, null);
+  document.execCommand('delete', false, null);
+  await sleep(200);
+  document.execCommand('insertText', false, name);
+  await sleep(2200);
+
+  // Try exact name match first
+  const rows = document.querySelectorAll('[data-testid="cell-frame-container"]');
+  for (const row of rows) {
+    const rowName = row.querySelector('[data-testid="cell-frame-title"]')?.textContent?.trim() || '';
+    if (rowName.toLowerCase() === name.toLowerCase()) {
+      row.click();
+      await sleep(600);
+      return { success: true };
+    }
+  }
+  // Fallback: click first result
+  const first = document.querySelector('[data-testid="cell-frame-container"]');
+  if (!first) return { success: false, error: 'Chat not found: ' + name };
+  first.click();
+  await sleep(600);
+  return { success: true };
+}
+
 // ─── Send Image (with file URL) ───────────────────────────────────────────────
 async function sendWithCaption(caption) {
   // Caption is already in the input via the ?text= URL parameter
@@ -1389,7 +1424,7 @@ function injectMeetingStyles() {
       border-color: #00a884;
     }
     #wa-hover-reply::after {
-      content: 'Reply';
+      content: var(--whr-tip, 'Reply');
       position: absolute;
       bottom: calc(100% + 5px);
       left: 50%;
@@ -1403,20 +1438,26 @@ function injectMeetingStyles() {
     }
     #wa-hover-reply.whr-visible:hover::after { opacity: 1; }
 
-    /* ── Chat Pin Button (sits next to WA's chevron-down button) ── */
+    /* ── Chat Pin Button (right side of each chat row) ── */
     .wa-pin-btn {
-      width: 20px; height: 20px;
-      background: none; border: none;
-      cursor: pointer; padding: 0;
+      position: absolute;
+      right: 10px; top: 50%; transform: translateY(-50%);
+      height: 26px;
+      background: rgba(17,27,33,.9); border: none; border-radius: 13px;
+      cursor: pointer; padding: 0 8px 0 6px; z-index: 5;
       color: #8696a0;
-      font-size: 14px; line-height: 20px;
-      display: flex; align-items: center; justify-content: center;
+      font-size: 11px; font-weight: 600; letter-spacing: .3px;
+      display: flex; align-items: center; justify-content: center; gap: 4px;
       flex-shrink: 0;
-      opacity: 1;
+      opacity: 0;
       pointer-events: all !important;
+      transition: opacity .15s, color .15s, background .15s;
+      white-space: nowrap;
+      box-shadow: 0 1px 4px rgba(0,0,0,.35);
     }
-    .wa-pin-btn.pinned { color: #d29922 !important; }
-    .wa-pin-btn:hover  { color: #00a884 !important; }
+    .wa-pin-btn.wa-pin-visible { opacity: 1; }
+    .wa-pin-btn.pinned { opacity: 1 !important; color: #00a884 !important; background: rgba(0,168,132,.15) !important; }
+    .wa-pin-btn:hover  { color: #00a884 !important; background: rgba(0,168,132,.25) !important; }
   `;
   document.head.appendChild(style);
 }
@@ -1775,23 +1816,364 @@ function ensureMeetingBar() {
   positionMeetingBar();
 }
 
+// ─── Open Unknown Chat (chat with unsaved number) ────────────────────────────
+
+function injectUnknownChatStyles() {
+  if (document.getElementById('wa-unk-styles')) return;
+  const s = document.createElement('style');
+  s.id = 'wa-unk-styles';
+  s.textContent = `
+    #wa-unk-fab {
+      position: absolute;
+      bottom: 18px;
+      right: 18px;
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      background: #00a884;
+      border: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 2px 12px rgba(0,0,0,.35);
+      z-index: 1000;
+      transition: transform .15s, background .15s;
+    }
+    #wa-unk-fab:hover { background: #06cf9c; transform: scale(1.08); }
+    #wa-unk-fab:active { transform: scale(0.95); }
+    #wa-unk-fab svg { pointer-events: none; }
+
+    #wa-unk-panel {
+      position: absolute;
+      bottom: 76px;
+      right: 18px;
+      width: 300px;
+      background: #1f2c34;
+      border-radius: 12px;
+      box-shadow: 0 8px 30px rgba(0,0,0,.45);
+      z-index: 1001;
+      padding: 0;
+      overflow: hidden;
+      animation: unkSlideUp .2s ease;
+    }
+    @keyframes unkSlideUp {
+      from { opacity: 0; transform: translateY(12px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .wa-unk-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 16px 10px;
+      border-bottom: 1px solid #2a3942;
+    }
+    .wa-unk-header h3 {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 600;
+      color: #e9edef;
+    }
+    .wa-unk-close {
+      background: none;
+      border: none;
+      color: #8696a0;
+      cursor: pointer;
+      padding: 4px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background .15s;
+    }
+    .wa-unk-close:hover { background: #2a3942; color: #e9edef; }
+    .wa-unk-body {
+      padding: 16px;
+    }
+    .wa-unk-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .wa-unk-cc {
+      width: 72px;
+      flex-shrink: 0;
+      background: #2a3942;
+      border: 1px solid #3b4a54;
+      border-radius: 8px;
+      color: #e9edef;
+      font-size: 14px;
+      padding: 0 8px;
+      text-align: center;
+      outline: none;
+      transition: border-color .15s;
+    }
+    .wa-unk-cc:focus { border-color: #00a884; }
+    .wa-unk-phone {
+      flex: 1;
+      background: #2a3942;
+      border: 1px solid #3b4a54;
+      border-radius: 8px;
+      color: #e9edef;
+      font-size: 14px;
+      padding: 10px 12px;
+      outline: none;
+      transition: border-color .15s;
+    }
+    .wa-unk-phone:focus { border-color: #00a884; }
+    .wa-unk-phone::placeholder { color: #8696a0; }
+    .wa-unk-msg {
+      width: 100%;
+      background: #2a3942;
+      border: 1px solid #3b4a54;
+      border-radius: 8px;
+      color: #e9edef;
+      font-size: 13px;
+      padding: 10px 12px;
+      outline: none;
+      resize: none;
+      height: 60px;
+      margin-bottom: 12px;
+      transition: border-color .15s;
+      box-sizing: border-box;
+    }
+    .wa-unk-msg:focus { border-color: #00a884; }
+    .wa-unk-msg::placeholder { color: #8696a0; }
+    .wa-unk-submit {
+      width: 100%;
+      padding: 10px;
+      border-radius: 8px;
+      border: none;
+      background: #00a884;
+      color: #111b21;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .15s, transform .1s;
+    }
+    .wa-unk-submit:hover { background: #06cf9c; }
+    .wa-unk-submit:active { transform: scale(0.97); }
+    .wa-unk-submit:disabled { opacity: .5; cursor: not-allowed; }
+    .wa-unk-hint {
+      font-size: 11px;
+      color: #8696a0;
+      margin-top: 8px;
+      text-align: center;
+    }
+    .wa-unk-recent {
+      border-top: 1px solid #2a3942;
+      padding: 10px 16px;
+      max-height: 120px;
+      overflow-y: auto;
+    }
+    .wa-unk-recent-title {
+      font-size: 11px;
+      color: #8696a0;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      margin-bottom: 6px;
+    }
+    .wa-unk-recent-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background .15s;
+      color: #e9edef;
+      font-size: 13px;
+    }
+    .wa-unk-recent-item:hover { background: #2a3942; }
+    .wa-unk-recent-del {
+      background: none;
+      border: none;
+      color: #8696a0;
+      cursor: pointer;
+      font-size: 14px;
+      padding: 2px 4px;
+      border-radius: 4px;
+    }
+    .wa-unk-recent-del:hover { color: #f15c6d; }
+  `;
+  document.head.appendChild(s);
+}
+
+function injectUnknownChatFab() {
+  injectUnknownChatStyles();
+  const side = document.getElementById('side');
+  if (!side) return;
+  // Make side relative for FAB positioning
+  if (getComputedStyle(side).position === 'static') side.style.position = 'relative';
+  if (document.getElementById('wa-unk-fab')) return;
+
+  const fab = document.createElement('button');
+  fab.id = 'wa-unk-fab';
+  fab.title = 'Chat with unsaved number';
+  fab.innerHTML = `<svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+    <path d="M20 15.5c-1.25 0-2.45-.2-3.57-.57a1 1 0 00-1.02.24l-2.2 2.2a15.05 15.05 0 01-6.59-6.58l2.2-2.2a1 1 0 00.25-1.03A11.36 11.36 0 018.5 4a1 1 0 00-1-1H4a1 1 0 00-1 1 17 17 0 0017 17 1 1 0 001-1v-3.5a1 1 0 00-1-1z" fill="#111b21"/>
+    <path d="M15 3h2v3h3v2h-3v3h-2V8h-3V6h3V3z" fill="#111b21"/>
+  </svg>`;
+  fab.addEventListener('click', e => {
+    e.stopPropagation();
+    toggleUnknownChatPanel();
+  });
+  side.appendChild(fab);
+}
+
+function toggleUnknownChatPanel() {
+  const existing = document.getElementById('wa-unk-panel');
+  if (existing) { existing.remove(); return; }
+  openUnknownChatPanel();
+}
+
+function openUnknownChatPanel() {
+  if (document.getElementById('wa-unk-panel')) return;
+  const side = document.getElementById('side');
+  if (!side) return;
+
+  const panel = document.createElement('div');
+  panel.id = 'wa-unk-panel';
+
+  // Load recent numbers
+  chrome.storage.local.get('unkRecentNums', ({ unkRecentNums = [] }) => {
+    panel.innerHTML = `
+      <div class="wa-unk-header">
+        <h3>💬 Chat with Number</h3>
+        <button class="wa-unk-close" id="wa-unk-close-btn">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </div>
+      <div class="wa-unk-body">
+        <div class="wa-unk-row">
+          <input class="wa-unk-cc" id="wa-unk-cc" value="+91" placeholder="+91" />
+          <input class="wa-unk-phone" id="wa-unk-phone" placeholder="Phone number" autocomplete="off" />
+        </div>
+        <textarea class="wa-unk-msg" id="wa-unk-msg" placeholder="Message (optional)"></textarea>
+        <button class="wa-unk-submit" id="wa-unk-go">Open Chat</button>
+        <div class="wa-unk-hint">No need to save contact — just type and go</div>
+      </div>
+      ${unkRecentNums.length ? `
+        <div class="wa-unk-recent">
+          <div class="wa-unk-recent-title">Recent</div>
+          ${unkRecentNums.map((r, i) => `
+            <div class="wa-unk-recent-item" data-idx="${i}" data-num="${r.full}">
+              <span>${r.cc} ${r.phone}</span>
+              <button class="wa-unk-recent-del" data-delidx="${i}">&times;</button>
+            </div>
+          `).join('')}
+        </div>
+      ` : ''}
+    `;
+    side.appendChild(panel);
+
+    // Wire up
+    const ccInput    = panel.querySelector('#wa-unk-cc');
+    const phoneInput = panel.querySelector('#wa-unk-phone');
+    const msgInput   = panel.querySelector('#wa-unk-msg');
+    const goBtn      = panel.querySelector('#wa-unk-go');
+    const closeBtn   = panel.querySelector('#wa-unk-close-btn');
+
+    phoneInput.focus();
+
+    // Only allow digits in phone
+    phoneInput.addEventListener('input', () => {
+      phoneInput.value = phoneInput.value.replace(/[^\d\s\-]/g, '');
+    });
+
+    closeBtn.addEventListener('click', () => panel.remove());
+
+    goBtn.addEventListener('click', () => _openUnknownChat(ccInput, phoneInput, msgInput, panel));
+
+    // Enter to submit
+    phoneInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter') _openUnknownChat(ccInput, phoneInput, msgInput, panel);
+    });
+    msgInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        _openUnknownChat(ccInput, phoneInput, msgInput, panel);
+      }
+    });
+
+    // Recent clicks
+    panel.querySelectorAll('.wa-unk-recent-item').forEach(item => {
+      item.addEventListener('click', e => {
+        if (e.target.classList.contains('wa-unk-recent-del')) return;
+        const num = item.dataset.num;
+        window.open(`https://web.whatsapp.com/send?phone=${num}`, '_self');
+        panel.remove();
+      });
+    });
+
+    // Recent delete
+    panel.querySelectorAll('.wa-unk-recent-del').forEach(del => {
+      del.addEventListener('click', e => {
+        e.stopPropagation();
+        const idx = parseInt(del.dataset.delidx);
+        chrome.storage.local.get('unkRecentNums', ({ unkRecentNums = [] }) => {
+          unkRecentNums.splice(idx, 1);
+          chrome.storage.local.set({ unkRecentNums });
+          panel.remove();
+          openUnknownChatPanel(); // re-render
+        });
+      });
+    });
+  });
+}
+
+function _openUnknownChat(ccInput, phoneInput, msgInput, panel) {
+  const cc    = ccInput.value.replace(/[^\d+]/g, '');
+  const phone = phoneInput.value.replace(/\D/g, '');
+  if (!phone || phone.length < 4) {
+    phoneInput.style.borderColor = '#f15c6d';
+    phoneInput.focus();
+    setTimeout(() => phoneInput.style.borderColor = '', 1500);
+    return;
+  }
+  const full = cc.replace('+', '') + phone;
+  const msg  = msgInput.value.trim();
+
+  // Save to recent (max 10)
+  chrome.storage.local.get('unkRecentNums', ({ unkRecentNums = [] }) => {
+    // Remove duplicate if exists
+    unkRecentNums = unkRecentNums.filter(r => r.full !== full);
+    unkRecentNums.unshift({ cc: ccInput.value, phone: phoneInput.value, full });
+    if (unkRecentNums.length > 10) unkRecentNums = unkRecentNums.slice(0, 10);
+    chrome.storage.local.set({ unkRecentNums });
+  });
+
+  let url = `https://web.whatsapp.com/send?phone=${full}`;
+  if (msg) url += `&text=${encodeURIComponent(msg)}`;
+  window.open(url, '_self');
+  panel.remove();
+}
+
 // Poll every 400ms — meeting bar + transcribe buttons + translate buttons + label bar + audio interceptor
 injectAudioInterceptor(); // run immediately on load
-setInterval(() => {
-  ensureMeetingBar();
-  injectQuickReplyStrip();
-  injectTranscribeButtons();
-  injectTranslateButtons();
-  injectHoverReply();
-  ensureLabelFilterBar();
-  if (currentLabelFilter !== 'all') {
-    applyLabelFilter(currentLabelFilter);
-    startLabelObserver();
+const _mainPollInterval = setInterval(() => {
+  // Stop polling if extension was reloaded/invalidated
+  if (!chrome.runtime?.id) { clearInterval(_mainPollInterval); return; }
+  try {
+    ensureMeetingBar();
+    injectQuickReplyStrip();
+    injectTranscribeButtons();
+    injectTranslateButtons();
+    injectHoverReply();
+    ensureLabelFilterBar();
+    if (currentLabelFilter !== 'all') {
+      applyLabelFilter(currentLabelFilter);
+      startLabelObserver();
+    }
+    applyVirtualPins();
+    startVpinObserver();
+    injectChatPinButtons();
+    syncNativePinsToStorage();
+    injectAudioInterceptor();
+    injectUnknownChatFab();
+  } catch (e) {
+    if (e.message?.includes('Extension context invalidated')) clearInterval(_mainPollInterval);
   }
-  applyVirtualPins();
-  startVpinObserver();
-  injectChatPinButtons();
-  injectAudioInterceptor();
 }, 400);
 
 // ─── Message Translation ──────────────────────────────────────────────────────
@@ -1986,6 +2368,30 @@ function stopLabelObserver() {
   if (labelObserver) { labelObserver.disconnect(); labelObserver = null; }
 }
 
+// ─── Chat row selector helper (WA Web changes selectors between versions) ─────
+function getChatRows(pane) {
+  const SELS = [
+    '[data-testid="cell-frame-container"]',
+    '[role="listitem"]',
+    '#pane-side li',
+    '#pane-side [tabindex="-1"]',
+  ];
+  for (const sel of SELS) {
+    const rows = Array.from((pane || document).querySelectorAll(sel));
+    if (rows.length > 0) return rows;
+  }
+  return [];
+}
+
+function getChatName(row) {
+  const el =
+    row.querySelector('[data-testid="cell-frame-title"]') ||
+    row.querySelector('span[title][dir="auto"]') ||
+    row.querySelector('[dir="auto"][title]') ||
+    row.querySelector('span[title]');
+  return el ? (el.title || el.textContent || '').trim() : '';
+}
+
 // ─── Virtual Pin (up to 8 pinned chats in WA Web list) ───────────────────────
 let vpinObserver   = null;
 let vpinDebounce   = null;
@@ -1995,41 +2401,70 @@ function applyVirtualPins() {
   if (!pane) return;
 
   chrome.storage.local.get('pinnedChats', ({ pinnedChats = [] }) => {
-    // Remove stale badges first
-    pane.querySelectorAll('.wa-vpin-badge').forEach(b => b.remove());
+    // Clean up previous virtual pin icons
+    pane.querySelectorAll('.wa-vpin-icon').forEach(b => b.remove());
+    pane.querySelectorAll('[data-wa-vpinned]').forEach(el => { delete el.dataset.waVpinned; });
+
     if (!pinnedChats.length) return;
 
-    const rows = Array.from(pane.querySelectorAll('[data-testid="cell-frame-container"]'));
+    // First 3 are natively pinned by WA — we only need virtual handling for 4-6
+    const virtualPins = pinnedChats.slice(3); // chats at index 3,4,5
+    if (!virtualPins.length) return;
+
+    const vpOrder = new Map();
+    virtualPins.forEach((p, i) => {
+      vpOrder.set((p.name || '').toLowerCase().trim(), i);
+      const digits = (p.phone || '').replace(/\D/g, '');
+      if (digits.length >= 7) vpOrder.set('phone:' + digits, i);
+    });
+
+    const rows = getChatRows(pane);
     if (!rows.length) return;
 
-    const pinnedNames  = new Set(pinnedChats.map(p => (p.name  || '').toLowerCase().trim()));
-    const pinnedPhones = new Set(pinnedChats.map(p => (p.phone || '').replace(/\D/g, '')));
+    // Find the last natively-pinned row (WA shows native pins at top with pin icon)
+    let lastNativePin = null;
+    for (const row of rows) {
+      if (row.querySelector('[data-icon="pinned2"],[data-icon="pin-refreshed-thin"],[aria-label="Pinned chat"]')) lastNativePin = row;
+    }
 
     const matched = [];
     rows.forEach(row => {
-      const nameEl    = row.querySelector('[data-testid="cell-frame-title"]');
-      const nameText  = (nameEl?.textContent || '').trim().toLowerCase();
-      const digits    = nameText.replace(/\D/g, '');
-      const isVPin    = pinnedNames.has(nameText) ||
-                        (digits.length >= 7 && pinnedPhones.has(digits));
-      if (!isVPin) return;
+      const nameText = getChatName(row).toLowerCase();
+      const digits   = nameText.replace(/\D/g, '');
 
-      // Add 📌 badge
-      const badge = document.createElement('span');
-      badge.className = 'wa-vpin-badge';
-      badge.textContent = '📌';
-      badge.style.cssText = 'position:absolute;top:6px;right:6px;font-size:11px;z-index:2;pointer-events:none';
-      row.style.position = 'relative';
-      row.appendChild(badge);
-      matched.push(row);
+      let order = vpOrder.get(nameText);
+      if (order === undefined && digits.length >= 7) order = vpOrder.get('phone:' + digits);
+      if (order === undefined) return;
+
+      row.dataset.waVpinned = '1';
+
+      // Inject WA-style pin icon if WA doesn't already show one
+      const hasNativePin = row.querySelector('[data-icon="pinned2"],[data-icon="pin-refreshed-thin"],[aria-label="Pinned chat"]');
+      if (!hasNativePin) {
+        const icon = document.createElement('span');
+        icon.className = 'wa-vpin-icon';
+        icon.innerHTML = `<svg viewBox="0 0 16 16" width="16" height="16" fill="#8696a0"><path d="M11.2 3.6V8.8l1.42 1.42c.06.06.1.12.13.19.03.07.05.15.05.23v.35c0 .17-.06.32-.17.44-.12.12-.27.17-.44.17H8.6v3.72c0 .17-.06.32-.18.43a.6.6 0 01-.43.18.6.6 0 01-.43-.18.6.6 0 01-.18-.43V11.6H3.8c-.17 0-.32-.06-.44-.17a.59.59 0 01-.17-.44v-.35c0-.08.02-.16.05-.23.03-.07.07-.13.13-.19L4.8 8.8V3.6h-.2c-.17 0-.32-.06-.44-.17a.6.6 0 01-.17-.43.6.6 0 01.17-.43c.12-.12.27-.17.44-.17h7.6c.17 0 .32.06.44.17.12.12.17.27.17.44a.6.6 0 01-.17.43c-.12.11-.27.17-.44.17h-.2zM5.3 10.4h5.4L9.6 9.3V3.6H6.4v5.7L5.3 10.4z"/></svg>`;
+        icon.style.cssText = 'position:absolute;bottom:12px;right:12px;z-index:2;pointer-events:none;opacity:.6;display:flex;align-items:center';
+        row.style.position = 'relative';
+        row.appendChild(icon);
+      }
+
+      matched.push({ row, order });
     });
 
-    // Move matched rows to the very top of the list
     if (!matched.length) return;
+
+    // Move virtual-pinned rows right after the last native pin
+    matched.sort((a, b) => a.order - b.order);
     const parent = rows[0].parentElement;
     if (!parent) return;
-    // Insert in reverse so first pin ends up at top
-    [...matched].reverse().forEach(row => parent.insertBefore(row, parent.firstChild));
+
+    // Insert after last native pin, or at top if no native pins found
+    let insertRef = lastNativePin ? lastNativePin.nextSibling : parent.firstChild;
+    matched.forEach(({ row }) => {
+      parent.insertBefore(row, insertRef);
+      insertRef = row.nextSibling;
+    });
   });
 }
 
@@ -2039,7 +2474,7 @@ function startVpinObserver() {
   if (!pane) return;
   vpinObserver = new MutationObserver(() => {
     clearTimeout(vpinDebounce);
-    vpinDebounce = setTimeout(applyVirtualPins, 350);
+    vpinDebounce = setTimeout(applyVirtualPins, 500);
   });
   vpinObserver.observe(pane, { childList: true, subtree: true });
 }
@@ -2048,6 +2483,65 @@ function startVpinObserver() {
 chrome.storage.onChanged.addListener(changes => {
   if (changes.pinnedChats) applyVirtualPins();
 });
+
+// ─── Sync WA native pins → extension Quick Pin ────────────────────────────────
+let _lastNativePinKey = '';
+
+function syncNativePinsToStorage() {
+  const pane = document.querySelector('#pane-side');
+  if (!pane) return;
+
+  // Start from the pin icon and walk UP to find name + data-id
+  // This works regardless of what WA Web calls the chat row element
+  const pinIcons = pane.querySelectorAll(
+    '[data-icon="pinned2"],[data-icon="pin-refreshed-thin"],[aria-label="Pinned chat"]'
+  );
+
+  const nativePins = [];
+  pinIcons.forEach(icon => {
+    let name = '', dataId = '', el = icon;
+
+    // Walk up max 20 levels to find name + data-id
+    for (let i = 0; i < 20; i++) {
+      el = el.parentElement;
+      if (!el) break;
+
+      // Grab data-id as soon as we find it
+      if (!dataId && el.dataset.id) dataId = el.dataset.id;
+
+      // Try all known name selectors
+      if (!name) {
+        const nameEl =
+          el.querySelector('[data-testid="cell-frame-title"]') ||
+          el.querySelector('span[title][dir="auto"]') ||
+          el.querySelector('[dir="auto"][title]');
+        if (nameEl) name = (nameEl.title || nameEl.textContent || '').trim();
+      }
+
+      if (name && dataId) break;
+    }
+
+    if (!name) return;
+    const isGroup = dataId.endsWith('@g.us');
+    const phone   = dataId.split('@')[0] || name;
+    // Avoid duplicates
+    if (!nativePins.some(p => p.name === name)) {
+      nativePins.push({ phone, name, isGroup });
+    }
+  });
+
+  const key = nativePins.map(p => p.name).join('|');
+  if (key === _lastNativePinKey) return;
+  _lastNativePinKey = key;
+
+  chrome.storage.local.get('pinnedChats', ({ pinnedChats = [] }) => {
+    const virtualOnly = pinnedChats.filter(p =>
+      !nativePins.some(n => n.name.toLowerCase() === p.name.toLowerCase())
+    );
+    const merged = [...nativePins, ...virtualOnly].slice(0, 6);
+    chrome.storage.local.set({ pinnedChats: merged });
+  });
+}
 
 // ─── Contact Card Panel ───────────────────────────────────────────────────────
 function closeCardPanel() {
@@ -2223,8 +2717,8 @@ function showReplyBtnFor(msgContainer) {
 
   const bubble = getBubbleEl(msgContainer);
   const r = (bubble || msgContainer).getBoundingClientRect();
+  if (r.width < 10) return; // off-screen / hidden
 
-  // WA places its emoji btn to the RIGHT of incoming bubbles, LEFT of outgoing
   const isOut = msgContainer.classList.contains('message-out') ||
                 !!msgContainer.closest('.message-out') ||
                 !!msgContainer.querySelector(
@@ -2232,22 +2726,34 @@ function showReplyBtnFor(msgContainer) {
                   '[data-testid="msg-dblcheck"],[data-testid="msg-check"]'
                 );
 
-  const TOP = r.top + 4;
+  // Position vertically centered on top edge of bubble
+  const TOP = r.top + Math.min(r.height / 2 - 13, 6);
   if (isOut) {
-    // Outgoing: place to the LEFT of bubble, beyond WA's own emoji btn
     btn.style.top  = TOP + 'px';
-    btn.style.left = (r.left - 58) + 'px';
+    btn.style.left = (r.left - 36) + 'px';   // left of outgoing bubble
   } else {
-    // Incoming: place to the RIGHT of bubble, beyond WA's own emoji btn
     btn.style.top  = TOP + 'px';
-    btn.style.left = (r.right + 32) + 'px';
+    btn.style.left = (r.right + 10) + 'px';  // right of incoming bubble
   }
+
+  // Update tooltip: "Go to original" if message is a reply, else "Reply"
+  // Walk up to outermost msg-container to check for quoted preview
+  const _msgSel = '[data-testid="msg-container"], .message-in, .message-out';
+  let _root = msgContainer;
+  { let el = msgContainer.parentElement, lim = 12;
+    while (el && lim-- > 0) { if (el.matches(_msgSel)) _root = el; if (el.id === 'main') break; el = el.parentElement; } }
+  const hasQuote = !!(
+    _root.querySelector('[data-testid="quoted-msg"],[data-testid="quoted-message"],[data-testid*="quot"],[class*="quoted"],[aria-label="Quoted message"]') ||
+    _root.querySelector('button [data-testid="selectable-text"]')
+  );
+  btn.style.setProperty('--whr-tip', hasQuote ? '"Go to original"' : '"Reply"');
+
   btn.classList.add('whr-visible');
 }
 
 function injectHoverReply() {
   ensureHoverReplyBtn();
-  // Bind to all messages — text, images, videos, stickers, documents, etc.
+  // Bind to all message containers — text, image, video, audio, sticker, etc.
   document.querySelectorAll('[data-testid="msg-container"], .message-in, .message-out').forEach(c => {
     if (c.dataset.waHoverReplyBound) return;
     c.dataset.waHoverReplyBound = '1';
@@ -2266,68 +2772,102 @@ function injectHoverReply() {
 
 // ─── Chat Row Pin Button ──────────────────────────────────────────────────────
 
+function countNativePins() {
+  return document.querySelectorAll('#pane-side [data-icon="pinned2"],[data-icon="pin-refreshed-thin"],[aria-label="Pinned chat"]').length;
+}
+
 async function tryNativePin(row) {
-  // Open WA's right-click context menu on the chat row
   const r = row.getBoundingClientRect();
   const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
   row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
   await sleep(400);
-
-  // Find "Pin chat" or "Unpin chat" in the menu
   const PIN_SELS = [
-    '[data-testid="mi-msg-pin"]',
-    '[aria-label="Pin chat"]', '[aria-label="Unpin chat"]',
-    '[aria-label*="Pin"]',
+    '[data-testid="mi-msg-pin"]', '[data-testid="mi-msg-unpin"]',
+    '[aria-label="Pin chat"]', '[aria-label="Unpin chat"]', '[aria-label*="Pin"]',
   ];
   for (const sel of PIN_SELS) {
     const item = document.querySelector(sel);
-    if (item) { item.click(); return; }
+    if (item) { item.click(); return true; }
   }
-  // Fallback: search menu items by text
   const item = [...document.querySelectorAll('[role="menuitem"], li')]
     .find(el => /^(pin|unpin)/i.test(el.textContent.trim()));
-  if (item) item.click();
-  // Dismiss menu if pin item not found
-  else document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  if (item) { item.click(); return true; }
+  document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  return false;
 }
 
 function injectChatPinButtons() {
   const pane = document.querySelector('#pane-side');
   if (!pane) return;
-  pane.querySelectorAll('[data-testid="cell-frame-container"]').forEach(cell => {
+  getChatRows(pane).forEach(cell => {
     if (cell.dataset.pinInjected) return;
-    // Find the chevron-down button WA shows on hover — inject our btn right before it
-    const chevron = cell.querySelector('span[data-icon="ic-chevron-down-menu"]')?.closest('button');
-    if (!chevron) return;
-    const nameEl = cell.querySelector('[data-testid="cell-frame-title"], span[title][dir="auto"]');
-    const name = nameEl?.textContent?.trim() || '';
+    const name = getChatName(cell);
     if (!name) return;
     cell.dataset.pinInjected = '1';
-    // Extract phone from WA's data-id (format: "12345678901@c.us")
-    const dataId = cell.dataset.id || '';
+
+    // Make cell relative so our absolute-positioned button works
+    if (getComputedStyle(cell).position === 'static') cell.style.position = 'relative';
+
+    // Extract phone
+    const dataId = cell.closest('[data-id]')?.dataset.id || '';
     const phone = dataId.split('@')[0] || name.replace(/\D/g, '') || name;
+
     const btn = document.createElement('button');
-    btn.className = 'wa-pin-btn'; btn.textContent = '📌'; btn.title = 'Pin chat';
-    // Insert right before the chevron so it sits in the same hover-visible container
-    chevron.parentElement.insertBefore(btn, chevron);
-    chrome.storage.local.get('pinnedChats', ({ pinnedChats = [] }) => {
-      if (pinnedChats.some(p => p.name.toLowerCase() === name.toLowerCase()))
-        btn.classList.add('pinned');
+    btn.className = 'wa-pin-btn';
+    btn.innerHTML = `<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M11.2 3.6V8.8l1.42 1.42c.06.06.1.12.13.19.03.07.05.15.05.23v.35c0 .17-.06.32-.17.44-.12.12-.27.17-.44.17H8.6v3.72c0 .17-.06.32-.18.43a.6.6 0 01-.43.18.6.6 0 01-.43-.18.6.6 0 01-.18-.43V11.6H3.8c-.17 0-.32-.06-.44-.17a.59.59 0 01-.17-.44v-.35c0-.08.02-.16.05-.23.03-.07.07-.13.13-.19L4.8 8.8V3.6h-.2c-.17 0-.32-.06-.44-.17a.6.6 0 01-.17-.43.6.6 0 01.17-.43c.12-.12.27-.17.44-.17h7.6c.17 0 .32.06.44.17.12.12.17.27.17.44a.6.6 0 01-.17.43c-.12.11-.27.17-.44.17h-.2zM5.3 10.4h5.4L9.6 9.3V3.6H6.4v5.7L5.3 10.4z"/></svg><span class="wa-pin-label">Pin</span>`;
+
+    // Append directly on the cell — CSS handles positioning
+    cell.appendChild(btn);
+
+    // JS hover — reliable across all WA DOM structures
+    cell.addEventListener('mouseenter', () => {
+      if (!btn.classList.contains('pinned')) {
+        btn.querySelector('.wa-pin-label').textContent = 'Pin';
+        btn.classList.add('wa-pin-visible');
+      }
     });
+    cell.addEventListener('mouseleave', () => {
+      if (!btn.classList.contains('pinned')) btn.classList.remove('wa-pin-visible');
+    });
+
+    // Check if already pinned
+    chrome.storage.local.get('pinnedChats', ({ pinnedChats = [] }) => {
+      if (pinnedChats.some(p => p.name.toLowerCase() === name.toLowerCase())) {
+        btn.classList.add('pinned', 'wa-pin-visible');
+        btn.querySelector('.wa-pin-label').textContent = 'Pinned';
+      }
+    });
+
     btn.addEventListener('click', e => {
       e.stopPropagation(); e.preventDefault();
       chrome.storage.local.get('pinnedChats', async ({ pinnedChats = [] }) => {
-        const n = nameEl?.textContent?.trim() || '';
-        const already = pinnedChats.some(p => p.name.toLowerCase() === n.toLowerCase());
-        if (already) {
-          await tryNativePin(cell.parentElement || cell);
-          pinnedChats = pinnedChats.filter(p => p.name.toLowerCase() !== n.toLowerCase());
-          btn.classList.remove('pinned'); btn.title = 'Pin chat';
+        const n = getChatName(cell);
+        const idx = pinnedChats.findIndex(p => p.name.toLowerCase() === n.toLowerCase());
+        if (idx >= 0) {
+          // Unpin: use native unpin for first 3 (they're natively pinned)
+          if (idx < 3) {
+            const chatRow = cell.closest('[role="listitem"]') || cell.parentElement || cell;
+            await tryNativePin(chatRow);
+          }
+          pinnedChats.splice(idx, 1);
+          btn.classList.remove('pinned');
+          btn.querySelector('.wa-pin-label').textContent = 'Pin';
         } else {
-          if (pinnedChats.length >= 8) { btn.title = 'Max 8 pins!'; setTimeout(() => btn.title = 'Pin chat', 1500); return; }
-          if (pinnedChats.length < 3) await tryNativePin(cell.parentElement || cell);
+          if (pinnedChats.length >= 6) {
+            const lbl = btn.querySelector('.wa-pin-label');
+            lbl.textContent = 'Max 6!';
+            setTimeout(() => { lbl.textContent = 'Pin'; }, 1500);
+            return;
+          }
+          // Pin: use WA native pin only if WA hasn't already reached its 3-pin limit
+          if (countNativePins() < 3) {
+            const chatRow = cell.closest('[role="listitem"]') || cell.parentElement || cell;
+            await tryNativePin(chatRow);
+          }
           pinnedChats.push({ phone, name: n });
-          btn.classList.add('pinned'); btn.title = 'Unpin';
+          btn.classList.add('wa-pin-visible');
+          btn.classList.add('pinned');
+          btn.querySelector('.wa-pin-label').textContent = 'Pinned';
         }
         chrome.storage.local.set({ pinnedChats });
         applyVirtualPins();
@@ -2337,9 +2877,53 @@ function injectChatPinButtons() {
 }
 
 async function triggerNativeReply(msgContainer) {
-  console.log('[WA-Reply] triggerNativeReply called');
   document.getElementById('wa-hover-reply')?.classList.remove('whr-visible');
 
+  // ── Case 1: Message IS a reply — click quoted preview to scroll to original ──
+  // Walk UP past any nested msg-containers (quoted preview may share same selector)
+  // to get the OUTERMOST message container
+  const MSG_SEL = '[data-testid="msg-container"], .message-in, .message-out';
+  let fullMsgRoot = msgContainer;
+  {
+    let el = msgContainer.parentElement;
+    let limit = 12;
+    while (el && limit-- > 0) {
+      if (el.matches(MSG_SEL)) fullMsgRoot = el;  // keep climbing to find outermost
+      if (el.id === 'main' || el.getAttribute('role') === 'application') break;
+      el = el.parentElement;
+    }
+  }
+
+  // Strategy A: classic testid selectors (older WA versions)
+  const QUOTED_SELS = '[data-testid="quoted-msg"],[data-testid="quoted-message"],[data-testid="quoted-mention"],[data-testid="quoted-preview"],[aria-label="Quoted message"],[data-testid*="quot"],[class*="quoted"],[class*="Quoted"]';
+  let quotedPreview = fullMsgRoot.querySelector(QUOTED_SELS);
+
+  // Strategy B: WA Web 2025 — quoted preview is a plain <button> wrapping
+  // [data-testid="selectable-text"] + sender-name [aria-label="Name:"]
+  if (!quotedPreview) {
+    const stInBtn = fullMsgRoot.querySelector('button [data-testid="selectable-text"]');
+    if (stInBtn) quotedPreview = stInBtn.closest('button');
+  }
+
+  // Strategy C: fullMsgRoot itself IS the quoted preview
+  // (sender aria-label ends with ":" AND has selectable-text)
+  if (!quotedPreview) {
+    const hasSenderColon = [...fullMsgRoot.querySelectorAll('[aria-label]')]
+      .some(el => (el.getAttribute('aria-label') || '').endsWith(':'));
+    if (hasSenderColon && fullMsgRoot.querySelector('[data-testid="selectable-text"]')) {
+      quotedPreview = fullMsgRoot.closest('button') || fullMsgRoot;
+    }
+  }
+
+  if (quotedPreview) {
+    quotedPreview.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    await sleep(150);
+    quotedPreview.click();
+    console.log('[WA-REPLY] clicked quoted preview');
+    return;
+  }
+
+  // ── Case 2: Regular message — try to initiate a new reply ──
   msgContainer.scrollIntoView({ block: 'center', behavior: 'instant' });
   await sleep(200);
 
@@ -2347,8 +2931,9 @@ async function triggerNativeReply(msgContainer) {
   const rect   = bubble.getBoundingClientRect();
   const cx     = Math.round(rect.left + rect.width / 2);
   const cy     = Math.round(rect.top  + rect.height / 2);
+  const coords = { bubbles: true, cancelable: true, clientX: cx, clientY: cy };
 
-  // ── Helpers ──
+  /* ── helpers ───────────────────────────────────────────── */
   const reveal = el => {
     if (!el) return () => {};
     const s = el.style;
@@ -2360,33 +2945,17 @@ async function triggerNativeReply(msgContainer) {
     return () => { s.opacity = prev.op; s.pointerEvents = prev.pe; s.visibility = prev.vis; s.display = prev.dis; };
   };
 
-  // Reveal an element AND all its ancestors up to root (WA hides parent containers too)
-  const revealChain = (el, stopAt) => {
-    const restores = [];
-    let node = el;
-    while (node && node !== stopAt && node !== document.body) {
-      const cs = getComputedStyle(node);
-      if (cs.opacity === '0' || cs.visibility === 'hidden' || cs.display === 'none' || cs.pointerEvents === 'none') {
-        restores.push(reveal(node));
-      }
-      node = node.parentElement;
-    }
-    return () => restores.forEach(r => r());
-  };
-
-  // Search roots: message container + ancestors + list-item wrapper
+  // Walk up from the message container to collect every plausible DOM root
   const buildRoots = () => {
     const roots = new Set();
     let node = msgContainer;
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 8; i++) {          // go up to 8 levels
       if (!node) break;
       roots.add(node);
       node = node.parentElement;
     }
-    for (const sel of ['[data-testid^="list-item"]', '[data-id]', '[class*="focusable-list-item"]']) {
-      const li = msgContainer.closest(sel);
-      if (li) { roots.add(li); if (li.parentElement) roots.add(li.parentElement); }
-    }
+    const listItem = msgContainer.closest('[data-testid^="list-item"], [data-id], [role="row"]');
+    if (listItem) { roots.add(listItem); if (listItem.parentElement) roots.add(listItem.parentElement); }
     return [...roots];
   };
 
@@ -2394,150 +2963,170 @@ async function triggerNativeReply(msgContainer) {
     '[data-testid="msg-action-reply"]',
     '[aria-label="Reply"]', '[aria-label*="eply"]',
     '[data-icon="reply-refreshed"]', '[data-icon="reply"]',
-    'button[title="Reply"]', 'button[title*="eply"]',
+    'button[title="Reply"]', 'button[title="reply"]',
+    '[aria-label="Responder"]', '[aria-label="Répondre"]', '[aria-label="Antworten"]',
   ];
 
   const findReplyBtn = root => {
     for (const sel of REPLY_SELS) {
       const el = root.querySelector(sel);
       if (el && !el.closest('[data-testid="quoted-msg"]')) {
-        // If it's an icon, walk up to the clickable button
-        return el.closest('button, [role="button"]') || el;
+        const btn = el.closest('button, [role="button"], span[role="button"]') || el;
+        return btn;
       }
     }
     return null;
   };
 
-  // Find "Reply" in any open WA popup/context menu (multi-language)
-  const REPLY_RE = /^(reply|responder|répondre|antworten|rispondi|balas|ответить)$/i;
-  const findReplyMenuItem = async (maxWait = 5) => {
-    for (let i = 0; i < maxWait; i++) {
-      await sleep(250);
-      const item =
-        document.querySelector('[data-testid="mi-msg-reply"]') ||
-        [...document.querySelectorAll('[role="menuitem"], [role="option"]')].find(el =>
-          REPLY_RE.test(el.textContent.trim())
-        ) ||
-        [...document.querySelectorAll('li[tabindex], li[role]')].find(el =>
-          el.querySelector('[data-icon="reply-refreshed"], [data-icon="reply"]') ||
-          REPLY_RE.test(el.textContent.trim())
-        );
-      if (item) return item;
+  // Multi-language "Reply" text matching for dropdown menu items
+  const REPLY_TEXTS = /^(reply|responder|répondre|antworten|rispondi|balas|yanıtla|回复|返信|답장)$/i;
+
+  const findMenuItem = async (retries = 6) => {
+    for (let i = 0; i < retries; i++) {
+      await sleep(300);
+      // Direct test-id
+      const mi = document.querySelector('[data-testid="mi-msg-reply"]');
+      if (mi) return mi;
+      // By reply icon — most reliable in WA Web 2025
+      const replyIcon = document.querySelector('[data-icon="reply-refreshed"], [data-icon="reply"]');
+      if (replyIcon) {
+        const btn = replyIcon.closest('[role="button"], button, li, [role="option"], [role="menuitem"]') || replyIcon.parentElement;
+        if (btn?.offsetParent) return btn;
+      }
+      // Role=menuitem / option / button with reply text
+      for (const el of document.querySelectorAll('[role="menuitem"], [role="option"], [role="button"]')) {
+        if (REPLY_TEXTS.test(el.textContent.trim())) return el;
+      }
+      // <li> with reply icon or text
+      for (const li of document.querySelectorAll('li')) {
+        if (li.querySelector('[data-icon="reply-refreshed"], [data-icon="reply"]')) return li;
+        if (REPLY_TEXTS.test(li.textContent.trim())) return li;
+      }
+      // Popup/overlay containers (WA Web 2025 uses data-animate-popup or role=listbox)
+      for (const el of document.querySelectorAll('[data-animate-popup] *, [role="menu"] *, [role="listbox"] *, [data-js-addon] *')) {
+        if (REPLY_TEXTS.test(el.textContent.trim()) && el.offsetParent) return el;
+      }
+      // Last resort: any visible element with exactly "Reply" text
+      for (const el of document.querySelectorAll('span, div')) {
+        if (REPLY_TEXTS.test(el.textContent.trim()) && el.offsetParent && el.getBoundingClientRect().width > 30) return el;
+      }
     }
     return null;
   };
 
-  // ── Method 1: Dispatch hover events → wait for React to render action bar ──
-  console.log('[WA-Reply] Method 1: hover simulation');
-  const hoverOpts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy };
-  for (const target of [bubble, msgContainer]) {
-    // Pointer events (React 17+ listens to these)
-    target.dispatchEvent(new PointerEvent('pointerover',  { ...hoverOpts, pointerId: 1, pointerType: 'mouse', relatedTarget: document.body }));
-    target.dispatchEvent(new PointerEvent('pointerenter', { ...hoverOpts, pointerId: 1, pointerType: 'mouse', bubbles: false, relatedTarget: document.body }));
-    target.dispatchEvent(new PointerEvent('pointermove',  { ...hoverOpts, pointerId: 1, pointerType: 'mouse' }));
-    // Mouse events (fallback for older React)
-    target.dispatchEvent(new MouseEvent('mouseover',  { ...hoverOpts, relatedTarget: document.body }));
-    target.dispatchEvent(new MouseEvent('mouseenter', { ...hoverOpts, bubbles: false, relatedTarget: document.body }));
-    target.dispatchEvent(new MouseEvent('mousemove',  hoverOpts));
+  const dismissMenu = () => {
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  };
+
+  /* ── simulate real hover on the msg row ──────────────── */
+  const hoverTargets = [msgContainer, bubble];
+  const listRow = msgContainer.closest('[data-testid^="list-item"], [role="row"], [data-id]');
+  if (listRow) hoverTargets.unshift(listRow);
+
+  for (const t of hoverTargets) {
+    t.dispatchEvent(new PointerEvent('pointerover',  { ...coords, pointerId: 1, bubbles: true }));
+    t.dispatchEvent(new PointerEvent('pointerenter', { ...coords, pointerId: 1, bubbles: false }));
+    t.dispatchEvent(new MouseEvent('mouseover',  coords));
+    t.dispatchEvent(new MouseEvent('mouseenter', { ...coords, bubbles: false }));
+    t.dispatchEvent(new MouseEvent('mousemove',  coords));
   }
 
-  // Wait & scan for the action bar to appear (React renders async)
-  for (let attempt = 0; attempt < 4; attempt++) {
-    await sleep(300);
-    for (const root of buildRoots()) {
-      const actionBar = root.querySelector('[data-testid="msg-action-bar"]');
-      for (const r of [actionBar, root].filter(Boolean)) {
-        const btn = findReplyBtn(r);
-        if (btn) {
-          console.log('[WA-Reply] M1: found reply btn', btn.outerHTML.slice(0, 80));
-          const restore = revealChain(btn, root);
-          btn.click();
-          await sleep(80);
-          restore();
-          return;
-        }
+  /* ── Method 1: Direct reply btn in action bar ────────── */
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await sleep(350);
+    const roots = buildRoots();
+    for (const root of roots) {
+      // Try direct reply button
+      const replyBtn = findReplyBtn(root);
+      if (replyBtn) {
+        const restore = reveal(replyBtn);
+        replyBtn.click();
+        await sleep(80);
+        restore();
+        console.log('[WA-REPLY] method 1 — direct reply button');
+        return;
       }
-      // Force-reveal the action bar and retry
+      // Check for action bar and force-reveal it
+      const actionBar = root.querySelector('[data-testid="msg-action-bar"]');
       if (actionBar) {
-        const restore = revealChain(actionBar, root);
-        await sleep(100);
+        const restore = reveal(actionBar);
+        await sleep(120);
         const btn = findReplyBtn(actionBar);
         if (btn) {
-          console.log('[WA-Reply] M1: found reply btn after reveal');
-          btn.click(); await sleep(80); restore(); return;
+          const r2 = reveal(btn);
+          btn.click();
+          await sleep(80);
+          r2(); restore();
+          console.log('[WA-REPLY] method 1 — revealed action bar reply');
+          return;
         }
         restore();
       }
     }
+    // Re-hover harder between attempts
+    if (attempt < 2) {
+      for (const t of hoverTargets) {
+        t.dispatchEvent(new PointerEvent('pointermove', { ...coords, pointerId: 1, bubbles: true }));
+        t.dispatchEvent(new MouseEvent('mousemove', coords));
+      }
+    }
   }
 
-  // ── Method 2: Find chevron/down arrow in action bar → click → Reply from dropdown ──
-  console.log('[WA-Reply] Method 2: chevron → dropdown');
-  const MORE_ICONS = ['down', 'down-context', 'chevron', 'chevron-down', 'msg-more', 'menu'];
+  /* ── Method 2: Click "▾" / more-options chevron → Reply ── */
+  const MORE_ICONS = ['down-context', 'down', 'msg-more', 'menu', 'chevron-down'];
   for (const root of buildRoots()) {
-    for (const name of MORE_ICONS) {
-      const icon = root.querySelector(`[data-icon="${name}"]`);
+    for (const iconName of MORE_ICONS) {
+      const icon = root.querySelector(`[data-icon="${iconName}"]`);
       if (!icon || icon.closest('[data-testid="quoted-msg"]')) continue;
-      const moreBtn = icon.closest('button, [role="button"], span[data-testid]') || icon.parentElement;
+      const moreBtn = icon.closest('button, [role="button"], span') || icon.parentElement;
       if (!moreBtn) continue;
-
-      console.log('[WA-Reply] M2: clicking chevron', name);
-      const restore = revealChain(moreBtn, root);
-      moreBtn.dispatchEvent(new PointerEvent('pointerdown', { ...hoverOpts, pointerId: 1, pointerType: 'mouse' }));
-      moreBtn.dispatchEvent(new PointerEvent('pointerup',   { ...hoverOpts, pointerId: 1, pointerType: 'mouse' }));
+      const restoreMore = reveal(moreBtn);
       moreBtn.click();
-      await sleep(100);
-      restore();
-
-      const dropReply = await findReplyMenuItem(6);
+      const dropReply = await findMenuItem(5);
       if (dropReply) {
-        console.log('[WA-Reply] M2: clicking Reply menu item');
         dropReply.click();
+        restoreMore();
+        console.log('[WA-REPLY] method 2 — chevron dropdown → Reply');
         return;
       }
-      // Close stale menu
-      document.body.click();
-      await sleep(100);
+      dismissMenu();
+      restoreMore();
+      break; // only try the first chevron found per root
     }
   }
 
-  // ── Method 3: Right-click context menu → Reply ──
-  console.log('[WA-Reply] Method 3: context menu');
-  bubble.dispatchEvent(new MouseEvent('contextmenu', {
-    bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 2, buttons: 2
-  }));
+  /* ── Method 3: Right-click context menu → Reply ────── */
+  // Try context menu on text element → bubble → container (WA handler may be on any of these)
+  const ctxTargets = [
+    bubble.querySelector('.copyable-text, .selectable-text, [dir="ltr"], [dir="auto"]') || bubble,
+    bubble,
+    msgContainer,
+  ].filter((el, i, arr) => el && arr.indexOf(el) === i); // deduplicate
 
-  const ctxReply = await findReplyMenuItem(6);
-  if (ctxReply) {
-    console.log('[WA-Reply] M3: clicking Reply from context menu');
-    ctxReply.click();
-    return;
-  }
-  // Close context menu
-  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
-  await sleep(100);
-
-  // ── Method 4: Brute-force — find ANY element with reply icon/testid in entire msg row ──
-  console.log('[WA-Reply] Method 4: brute-force scan');
-  const row = msgContainer.closest('[data-testid^="conv-msg"], [class*="focusable-list-item"]') || msgContainer.parentElement?.parentElement;
-  if (row) {
-    // Force-reveal everything in the row that's hidden
-    const hiddenEls = row.querySelectorAll('[style*="opacity: 0"], [style*="visibility: hidden"], [style*="display: none"]');
-    const restores = [...hiddenEls].map(el => reveal(el));
-    await sleep(100);
-
-    const btn = findReplyBtn(row);
-    if (btn) {
-      console.log('[WA-Reply] M4: brute-force found reply btn');
-      btn.click();
-      await sleep(80);
-      restores.forEach(r => r());
+  for (const ctxTarget of ctxTargets) {
+    const tRect = ctxTarget.getBoundingClientRect();
+    const tc = { bubbles: true, cancelable: true, clientX: Math.round(tRect.left + tRect.width / 2), clientY: Math.round(tRect.top + tRect.height / 2) };
+    ctxTarget.dispatchEvent(new MouseEvent('contextmenu', tc));
+    const menuReply = await findMenuItem(4);
+    if (menuReply) {
+      menuReply.click();
+      console.log('[WA-REPLY] method 3 — context menu → Reply');
       return;
     }
-    restores.forEach(r => r());
+    dismissMenu();
+    await sleep(200);
   }
 
-  console.warn('[WA-Reply] All methods failed for message:', msgContainer.textContent?.slice(0, 50));
+  /* ── Method 4: Double-click the message (WA shortcut) ── */
+  bubble.dispatchEvent(new MouseEvent('dblclick', coords));
+  await sleep(400);
+  // If compose box now has quoted-message, it worked
+  const quoted = document.querySelector('[data-testid="quoted-message"], [data-testid="compose-box-quote"]');
+  if (quoted) {
+    console.log('[WA-REPLY] method 4 — double-click');
+    return;
+  }
+
 }
 
 // ─── Bulk Message Send (reliable Lexical editor input) ────────────────────────
@@ -2725,6 +3314,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  if (msg.type === 'OPEN_CHAT_BY_NAME') {
+    openChatByName(msg.data.name).then(sendResponse).catch(e => sendResponse({ success: false, error: e.message }));
+    return true;
+  }
+
   if (msg.type === 'PING') {
     sendResponse({ ready: true });
     return false;
@@ -2732,49 +3326,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 // ─── Pinned Chats Bar (injected into WhatsApp Web left panel) ─────────────────
-function renderPinnedBar() {
-  const bar = document.getElementById('wa-ext-pin-bar');
-  if (!bar) return;
-  chrome.storage.local.get('pinnedChats', ({ pinnedChats = [] }) => {
-    if (!pinnedChats.length) {
-      bar.innerHTML = '<span style="font-size:11px;color:#8696a0;padding:2px 4px">📌 No pinned chats — add from extension</span>';
-      return;
-    }
-    bar.innerHTML = pinnedChats.map(p => `
-      <div data-wa-pin="${escapeHtml(p.phone)}" style="display:inline-flex;align-items:center;gap:4px;background:#2a373f;border-radius:12px;padding:3px 8px 3px 6px;cursor:pointer;font-size:11px;color:#e9edef;max-width:120px;flex-shrink:0">
-        <span style="width:16px;height:16px;border-radius:50%;background:#00a884;color:#111b21;font-size:8px;font-weight:800;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0">${escapeHtml((p.name||p.phone)[0].toUpperCase())}</span>
-        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0">${escapeHtml(p.name||p.phone)}</span>
-        <span data-wa-unpin="${escapeHtml(p.phone)}" style="color:#8696a0;font-size:11px;flex-shrink:0;padding:0 2px;line-height:1">✕</span>
-      </div>`).join('');
-
-    bar.querySelectorAll('[data-wa-pin]').forEach(chip => {
-      chip.addEventListener('click', e => {
-        if (e.target.closest('[data-wa-unpin]')) return;
-        openChatByPhone(chip.dataset.waPin);
-      });
-    });
-
-    bar.querySelectorAll('[data-wa-unpin]').forEach(btn => {
-      btn.addEventListener('click', e => {
-        e.stopPropagation();
-        chrome.storage.local.get('pinnedChats', ({ pinnedChats = [] }) => {
-          chrome.storage.local.set({ pinnedChats: pinnedChats.filter(p => p.phone !== btn.dataset.waUnpin) });
-        });
-      });
-    });
-  });
-}
-
-function initPinnedBar() {
-  if (document.getElementById('wa-ext-pin-bar')) return;
-  const pane = document.querySelector('#pane-side');
-  if (!pane) return;
-  const bar = document.createElement('div');
-  bar.id = 'wa-ext-pin-bar';
-  bar.style.cssText = 'background:#111b21;border-bottom:1px solid #2a373f;padding:6px 10px;display:flex;flex-wrap:wrap;gap:5px;align-items:center;min-height:34px;box-sizing:border-box';
-  pane.insertBefore(bar, pane.firstChild);
-  renderPinnedBar();
-}
+// Pin bar removed — pins are shown inline in the chat list like WA native
 
 // ─── Pin icon SVG (same as WA's native pin icon) ─────────────────────────────
 const _PIN_SVG = `<svg viewBox="0 0 20 20" height="20" width="20" preserveAspectRatio="xMidYMid meet" fill="none"><path d="M13.5 4.5V11L15.2708 12.7708C15.3403 12.8403 15.3958 12.9201 15.4375 13.0104C15.4792 13.1007 15.5 13.2014 15.5 13.3125V13.746C15.5 13.9597 15.4281 14.1388 15.2844 14.2833C15.1406 14.4278 14.9625 14.5 14.75 14.5H10.75V19.125C10.75 19.3375 10.6785 19.5156 10.5356 19.6594C10.3927 19.8031 10.2156 19.875 10.0044 19.875C9.79313 19.875 9.61458 19.8031 9.46875 19.6594C9.32292 19.5156 9.25 19.3375 9.25 19.125V14.5H5.25C5.0375 14.5 4.85938 14.4278 4.71563 14.2833C4.57188 14.1388 4.5 13.9597 4.5 13.746V13.3125C4.5 13.2014 4.52083 13.1007 4.5625 13.0104C4.60417 12.9201 4.65972 12.8403 4.72917 12.7708L6.5 11V4.5H6.25C6.0375 4.5 5.85938 4.42854 5.71563 4.28563C5.57188 4.14271 5.5 3.96563 5.5 3.75438C5.5 3.54313 5.57188 3.36458 5.71563 3.21875C5.85938 3.07292 6.0375 3 6.25 3H13.75C13.9625 3 14.1406 3.07146 14.2844 3.21437C14.4281 3.35729 14.5 3.53437 14.5 3.74562C14.5 3.95687 14.4281 4.13542 14.2844 4.28125C14.1406 4.42708 13.9625 4.5 13.75 4.5H13.5ZM6.625 13H13.375L12 11.625V4.5H8V11.625L6.625 13Z" fill="currentColor"></path></svg>`;
@@ -2798,7 +3350,7 @@ function _updatePinHeaderBtn() {
     const pinned = pinnedChats.some(p => p.name === info.name);
     btn.style.color    = pinned ? '#00a884' : '#8696a0';
     btn.dataset.pinned = pinned ? '1' : '';
-    btn.title = pinned ? 'Unpin from extension bar' : 'Pin to extension bar (up to 8)';
+    btn.title = pinned ? 'Unpin from extension bar' : 'Pin to extension bar (up to 6)';
   });
 }
 
@@ -2839,16 +3391,42 @@ function initPinHeaderBtn() {
     btn.addEventListener('click', () => {
       const cur = _getCurrentChatInfo();
       if (!cur) return;
-      chrome.storage.local.get('pinnedChats', ({ pinnedChats = [] }) => {
+      chrome.storage.local.get('pinnedChats', async ({ pinnedChats = [] }) => {
         const idx = pinnedChats.findIndex(p => p.name === cur.name);
         if (idx >= 0) {
+          // Unpin: trigger native unpin for first 3
+          if (idx < 3) {
+            const chatRow = document.querySelector('#pane-side [data-testid="cell-frame-container"]');
+            // find the actual row for this chat
+            const rows = document.querySelectorAll('#pane-side [data-testid="cell-frame-container"]');
+            for (const r of rows) {
+              const n = r.querySelector('[data-testid="cell-frame-title"]')?.textContent?.trim();
+              if (n && n.toLowerCase() === cur.name.toLowerCase()) {
+                const listRow = r.closest('[role="listitem"]') || r.parentElement || r;
+                await tryNativePin(listRow);
+                break;
+              }
+            }
+          }
           pinnedChats.splice(idx, 1);
           chrome.storage.local.set({ pinnedChats });
         } else {
-          if (pinnedChats.length >= 8) {
+          if (pinnedChats.length >= 6) {
             btn.style.color = '#f15c6d';
             setTimeout(() => _updatePinHeaderBtn(), 1500);
             return;
+          }
+          // Native pin only if WA hasn't reached its 3-pin limit
+          if (countNativePins() < 3) {
+            const rows = document.querySelectorAll('#pane-side [data-testid="cell-frame-container"]');
+            for (const r of rows) {
+              const n = r.querySelector('[data-testid="cell-frame-title"]')?.textContent?.trim();
+              if (n && n.toLowerCase() === cur.name.toLowerCase()) {
+                const listRow = r.closest('[role="listitem"]') || r.parentElement || r;
+                await tryNativePin(listRow);
+                break;
+              }
+            }
           }
           pinnedChats.push(cur);
           chrome.storage.local.set({ pinnedChats });
@@ -2882,8 +3460,10 @@ function _taskDateStr(task) {
 function _taskMatchesFilter(task, filter) {
   if (filter === 'done') return task.done;
   if (task.done) return false;
-  if (filter === 'today') return _taskDateStr(task) === _getTodayStr();
-  if (filter === 'tomorrow') return _taskDateStr(task) === _getTomorrowStr();
+  const ds = _taskDateStr(task);
+  if (filter === 'today') return ds === _getTodayStr();
+  if (filter === 'tomorrow') return ds === _getTomorrowStr();
+  if (filter === 'later') return ds !== _getTodayStr() && ds !== _getTomorrowStr();
   return true; // 'all'
 }
 
@@ -2910,156 +3490,371 @@ function injectTaskStyles() {
   const s = document.createElement('style');
   s.id = 'wa-task-styles';
   s.textContent = `
+    /* ── Panel Shell ── */
     #wa-ext-task-panel {
-      display: flex; flex-direction: column; flex: 1;
+      display: flex; flex-direction: row; flex: 1;
       width: 100%; height: 100%; background: #0b141a;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       overflow: hidden; box-sizing: border-box;
     }
-    #wa-ext-task-panel .wt-header { padding: 20px 20px 0; flex-shrink: 0; }
-    #wa-ext-task-panel .wt-title { font-size: 20px; font-weight: 700; color: #e9edef; margin: 0 0 14px; }
-    #wa-ext-task-panel .wt-tabs { display: flex; gap: 4px; margin-bottom: 14px; }
-    #wa-ext-task-panel .wt-tab {
-      padding: 5px 14px; border-radius: 14px; border: none;
-      background: #1f2c34; color: #8696a0; font-size: 12px; font-weight: 600;
-      cursor: pointer; transition: background .15s, color .15s;
+    /* ── Left Sidebar ── */
+    #wa-ext-task-panel .wt-sidebar {
+      width: 200px; min-width: 200px; flex-shrink: 0;
+      background: #111b21; border-right: 1px solid #1f2c34;
+      display: flex; flex-direction: column; padding: 24px 0;
     }
-    #wa-ext-task-panel .wt-tab.active { background: #00a884; color: #fff; }
-    #wa-ext-task-panel .wt-tab:hover:not(.active) { background: #2a3942; color: #e9edef; }
-    #wa-ext-task-panel .wt-add-form {
-      padding: 0 20px 12px; flex-shrink: 0; border-bottom: 1px solid #1f2c34;
+    #wa-ext-task-panel .wt-sidebar-title {
+      font-size: 18px; font-weight: 700; color: #e9edef;
+      padding: 0 20px 20px; display: flex; align-items: center; gap: 8px;
     }
-    #wa-ext-task-panel .wt-form-row { display: flex; gap: 6px; margin-bottom: 6px; align-items: center; }
-    #wa-ext-task-panel .wt-input {
-      flex: 1; background: #1f2c34; border: 1px solid #2a3942; border-radius: 8px;
-      padding: 7px 10px; color: #e9edef; font-size: 13px; outline: none; min-width: 0;
+    #wa-ext-task-panel .wt-sidebar-title svg { opacity: .7; }
+    #wa-ext-task-panel .wt-nav-item {
+      padding: 10px 20px; cursor: pointer; display: flex; align-items: center;
+      justify-content: space-between; color: #8696a0; font-size: 14px; font-weight: 500;
+      transition: background .12s, color .12s; border-left: 3px solid transparent;
     }
-    #wa-ext-task-panel .wt-input:focus { border-color: #00a884; }
-    #wa-ext-task-panel .wt-select {
-      background: #1f2c34; border: 1px solid #2a3942; border-radius: 8px;
-      padding: 7px 8px; color: #e9edef; font-size: 12px; outline: none; cursor: pointer;
+    #wa-ext-task-panel .wt-nav-item:hover { background: #1a2730; color: #e9edef; }
+    #wa-ext-task-panel .wt-nav-item.active {
+      background: #1a2730; color: #00a884; border-left-color: #00a884; font-weight: 600;
     }
-    #wa-ext-task-panel .wt-select:focus { border-color: #00a884; }
-    #wa-ext-task-panel .wt-add-btn {
-      background: #00a884; border: none; border-radius: 8px; padding: 7px 16px;
-      color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; flex-shrink: 0;
-      transition: background .15s;
+    #wa-ext-task-panel .wt-nav-count {
+      background: #2a3942; color: #8696a0; border-radius: 10px;
+      padding: 1px 8px; font-size: 11px; font-weight: 600; min-width: 18px; text-align: center;
     }
-    #wa-ext-task-panel .wt-add-btn:hover { background: #008f72; }
-    #wa-ext-task-panel .wt-list { flex: 1; overflow-y: auto; padding: 10px 20px 20px; }
-    #wa-ext-task-panel .wt-list::-webkit-scrollbar { width: 4px; }
-    #wa-ext-task-panel .wt-list::-webkit-scrollbar-track { background: transparent; }
-    #wa-ext-task-panel .wt-list::-webkit-scrollbar-thumb { background: #2a3942; border-radius: 4px; }
-    #wa-ext-task-panel .wt-empty { color: #8696a0; font-size: 13px; text-align: center; margin-top: 40px; }
-    #wa-ext-task-panel .wt-task-item {
-      display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px;
-      border-radius: 10px; background: #1f2c34; margin-bottom: 7px; transition: background .12s;
+    #wa-ext-task-panel .wt-nav-item.active .wt-nav-count { background: #005c4b; color: #00a884; }
+    /* ── Main Content ── */
+    #wa-ext-task-panel .wt-main {
+      flex: 1; display: flex; flex-direction: column; overflow: hidden;
     }
-    #wa-ext-task-panel .wt-task-item:hover { background: #2a3942; }
-    #wa-ext-task-panel .wt-task-cb {
-      width: 18px; height: 18px; border-radius: 50%; border: 2px solid #8696a0;
-      background: transparent; cursor: pointer; flex-shrink: 0; margin-top: 1px;
-      display: flex; align-items: center; justify-content: center; transition: border-color .15s, background .15s;
+    #wa-ext-task-panel .wt-content-header {
+      padding: 24px 28px 0; flex-shrink: 0;
     }
-    #wa-ext-task-panel .wt-task-cb.done { border-color: #00a884; background: #00a884; }
-    #wa-ext-task-panel .wt-task-cb.done::after {
+    #wa-ext-task-panel .wt-section-title {
+      font-size: 20px; font-weight: 700; color: #e9edef; margin: 0;
+    }
+    #wa-ext-task-panel .wt-content-scroll {
+      flex: 1; overflow-y: auto; padding: 16px 28px 28px;
+    }
+    #wa-ext-task-panel .wt-content-scroll::-webkit-scrollbar { width: 5px; }
+    #wa-ext-task-panel .wt-content-scroll::-webkit-scrollbar-track { background: transparent; }
+    #wa-ext-task-panel .wt-content-scroll::-webkit-scrollbar-thumb { background: #2a3942; border-radius: 4px; }
+    /* ── Task Row ── */
+    #wa-ext-task-panel .wt-task-row {
+      display: flex; align-items: flex-start; gap: 12px; padding: 12px 0;
+      border-bottom: 1px solid #1a2730; transition: background .1s; cursor: default;
+    }
+    #wa-ext-task-panel .wt-task-row:last-of-type { border-bottom: none; }
+    #wa-ext-task-panel .wt-task-row:hover { background: rgba(255,255,255,.02); margin: 0 -8px; padding: 12px 8px; border-radius: 8px; }
+    #wa-ext-task-panel .wt-cb {
+      width: 20px; height: 20px; border-radius: 50%; border: 2px solid #3b4a54;
+      background: transparent; cursor: pointer; flex-shrink: 0; margin-top: 2px;
+      display: flex; align-items: center; justify-content: center;
+      transition: border-color .15s, background .15s;
+    }
+    #wa-ext-task-panel .wt-cb:hover { border-color: #00a884; }
+    #wa-ext-task-panel .wt-cb.done { border-color: #00a884; background: #00a884; }
+    #wa-ext-task-panel .wt-cb.done::after {
       content: ''; width: 8px; height: 5px;
       border-left: 2px solid #fff; border-bottom: 2px solid #fff;
       transform: rotate(-45deg) translate(1px, -1px); display: block;
     }
-    #wa-ext-task-panel .wt-task-body { flex: 1; min-width: 0; }
-    #wa-ext-task-panel .wt-task-title { font-size: 13px; color: #e9edef; line-height: 1.4; word-break: break-word; }
-    #wa-ext-task-panel .wt-task-title.done { text-decoration: line-through; color: #8696a0; }
-    #wa-ext-task-panel .wt-task-meta { display: flex; align-items: center; gap: 5px; margin-top: 4px; flex-wrap: wrap; }
-    #wa-ext-task-panel .wt-badge { font-size: 10px; padding: 2px 7px; border-radius: 8px; font-weight: 600; }
-    #wa-ext-task-panel .wt-badge-date { background: #2a3942; color: #8696a0; }
-    #wa-ext-task-panel .wt-badge-time { background: #1a2c2a; color: #00a884; }
-    #wa-ext-task-panel .wt-badge-high   { background: #3d1a1a; color: #f28b82; }
-    #wa-ext-task-panel .wt-badge-medium { background: #2d2a14; color: #f9bc2a; }
-    #wa-ext-task-panel .wt-badge-low    { background: #1a2c1a; color: #57d17a; }
-    #wa-ext-task-panel .wt-task-actions { display: flex; gap: 2px; flex-shrink: 0; }
-    #wa-ext-task-panel .wt-action-btn {
-      background: none; border: none; cursor: pointer; padding: 5px; border-radius: 6px;
-      color: #8696a0; display: flex; align-items: center; justify-content: center;
-      transition: color .15s, background .15s; font-size: 13px; line-height: 1;
+    #wa-ext-task-panel .wt-task-info { flex: 1; min-width: 0; }
+    #wa-ext-task-panel .wt-task-name {
+      font-size: 14px; color: #e9edef; line-height: 1.4; word-break: break-word;
     }
-    #wa-ext-task-panel .wt-action-btn:hover { background: #3b4a54; color: #e9edef; }
-    #wa-ext-task-panel .wt-action-btn.alarm-on { color: #00a884; }
+    #wa-ext-task-panel .wt-task-name.done { text-decoration: line-through; color: #667781; }
+    #wa-ext-task-panel .wt-task-desc {
+      font-size: 12px; color: #667781; margin-top: 2px; line-height: 1.3;
+    }
+    #wa-ext-task-panel .wt-task-tags {
+      display: flex; gap: 6px; margin-top: 5px; flex-wrap: wrap; align-items: center;
+    }
+    #wa-ext-task-panel .wt-tag {
+      font-size: 10px; padding: 2px 8px; border-radius: 10px; font-weight: 600;
+    }
+    #wa-ext-task-panel .wt-tag-time { background: #0d2b26; color: #00a884; }
+    #wa-ext-task-panel .wt-tag-high { background: #3d1a1a; color: #f28b82; }
+    #wa-ext-task-panel .wt-tag-medium { background: #2d2a14; color: #f9bc2a; }
+    #wa-ext-task-panel .wt-tag-low { background: #1a2c1a; color: #57d17a; }
+    #wa-ext-task-panel .wt-tag-date { background: #1f2c34; color: #8696a0; }
+    #wa-ext-task-panel .wt-del-btn {
+      background: none; border: none; cursor: pointer; padding: 4px; border-radius: 6px;
+      color: #667781; opacity: 0; transition: opacity .15s, color .15s;
+      display: flex; align-items: center; justify-content: center;
+    }
+    #wa-ext-task-panel .wt-task-row:hover .wt-del-btn { opacity: 1; }
+    #wa-ext-task-panel .wt-del-btn:hover { color: #f15c6d; }
+    /* ── + Add task link ── */
+    #wa-ext-task-panel .wt-add-link {
+      display: inline-flex; align-items: center; gap: 4px; padding: 10px 0;
+      color: #00a884; font-size: 13px; font-weight: 600; cursor: pointer;
+      background: none; border: none; transition: color .12s;
+    }
+    #wa-ext-task-panel .wt-add-link:hover { color: #06cf9c; }
+    /* ── Inline Add Form ── */
+    #wa-ext-task-panel .wt-inline-form {
+      background: #1a2730; border: 1px solid #2a3942; border-radius: 12px;
+      padding: 16px; margin: 8px 0 4px; display: none;
+      animation: wtFormIn .15s ease;
+    }
+    @keyframes wtFormIn { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:translateY(0); } }
+    #wa-ext-task-panel .wt-inline-form.open { display: block; }
+    #wa-ext-task-panel .wt-form-field {
+      background: #111b21; border: 1px solid #2a3942; border-radius: 8px;
+      padding: 9px 12px; color: #e9edef; font-size: 13px; outline: none;
+      width: 100%; box-sizing: border-box; font-family: inherit;
+    }
+    #wa-ext-task-panel .wt-form-field:focus { border-color: #00a884; }
+    #wa-ext-task-panel .wt-form-field::placeholder { color: #667781; }
+    #wa-ext-task-panel .wt-form-field + .wt-form-field { margin-top: 8px; }
+    #wa-ext-task-panel .wt-form-pills {
+      display: flex; gap: 6px; margin-top: 12px; flex-wrap: wrap; align-items: center;
+    }
+    #wa-ext-task-panel .wt-pill {
+      padding: 5px 14px; border-radius: 16px; border: 1px solid #2a3942;
+      background: #111b21; color: #8696a0; font-size: 12px; font-weight: 600;
+      cursor: pointer; transition: all .12s;
+    }
+    #wa-ext-task-panel .wt-pill:hover { border-color: #00a884; color: #e9edef; }
+    #wa-ext-task-panel .wt-pill.active { background: #005c4b; border-color: #00a884; color: #fff; }
+    #wa-ext-task-panel .wt-remind-row {
+      display: flex; align-items: center; gap: 8px; margin-top: 12px;
+      color: #8696a0; font-size: 12px; cursor: pointer;
+    }
+    #wa-ext-task-panel .wt-remind-row:hover { color: #e9edef; }
+    #wa-ext-task-panel .wt-remind-row svg { flex-shrink: 0; }
+    #wa-ext-task-panel .wt-form-submit {
+      margin-top: 14px; background: #00a884; border: none; border-radius: 8px;
+      padding: 9px 24px; color: #fff; font-size: 13px; font-weight: 700;
+      cursor: pointer; transition: background .12s;
+    }
+    #wa-ext-task-panel .wt-form-submit:hover { background: #06cf9c; }
+    #wa-ext-task-panel .wt-form-actions {
+      display: flex; align-items: center; gap: 8px; margin-top: 14px;
+    }
+    #wa-ext-task-panel .wt-form-cancel {
+      background: none; border: none; color: #667781; font-size: 12px; font-weight: 600;
+      cursor: pointer; padding: 9px 14px; border-radius: 8px; transition: color .12s;
+    }
+    #wa-ext-task-panel .wt-form-cancel:hover { color: #e9edef; }
+    /* ── Empty state ── */
+    #wa-ext-task-panel .wt-empty {
+      color: #667781; font-size: 13px; padding: 8px 0; font-style: italic;
+    }
+    /* ── Priority select in form ── */
+    #wa-ext-task-panel .wt-priority-row {
+      display: flex; gap: 6px; margin-top: 10px; align-items: center;
+    }
+    #wa-ext-task-panel .wt-priority-row span { color: #667781; font-size: 11px; font-weight: 600; margin-right: 2px; }
+    /* ── Date input for custom ── */
+    #wa-ext-task-panel .wt-date-input {
+      background: #111b21; border: 1px solid #2a3942; border-radius: 8px;
+      padding: 5px 10px; color: #e9edef; font-size: 12px; outline: none;
+      margin-left: 4px; display: none;
+    }
+    #wa-ext-task-panel .wt-date-input:focus { border-color: #00a884; }
+    /* ── Time input ── */
+    #wa-ext-task-panel .wt-time-input {
+      background: #111b21; border: 1px solid #2a3942; border-radius: 8px;
+      padding: 5px 10px; color: #e9edef; font-size: 12px; outline: none;
+    }
+    #wa-ext-task-panel .wt-time-input:focus { border-color: #00a884; }
   `;
   document.head.appendChild(s);
+}
+
+function _formatDateNice(dateStr) {
+  const d = new Date(dateStr + 'T00:00:00');
+  const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const nth = n => n + (['','st','nd','rd'][n % 10 > 3 ? 0 : (n - n % 10 !== 10) * n % 10] || 'th');
+  return `${days[d.getDay()]} ${nth(d.getDate())} ${months[d.getMonth()]}`;
 }
 
 function renderTaskPanel() {
   const panel = document.getElementById(TASK_PANEL_ID);
   if (!panel) return;
-  const listEl = panel.querySelector('#wt-task-list');
-  if (!listEl) return;
 
   chrome.storage.local.get('waTasks', ({ waTasks = [] }) => {
-    const tasks = waTasks.filter(t => _taskMatchesFilter(t, _taskPanelFilter));
-    if (!tasks.length) {
-      const labels = { today: 'today', tomorrow: 'tomorrow', all: 'pending', done: 'completed' };
-      listEl.innerHTML = `<div class="wt-empty">No ${labels[_taskPanelFilter] || _taskPanelFilter} tasks</div>`;
-      return;
-    }
-
-    tasks.sort((a, b) => {
-      const da = _taskDateStr(a) + (a.time || '99:99');
-      const db = _taskDateStr(b) + (b.time || '99:99');
-      return da < db ? -1 : da > db ? 1 : 0;
-    });
-
-    const today = _getTodayStr();
+    const today    = _getTodayStr();
     const tomorrow = _getTomorrowStr();
 
-    listEl.innerHTML = tasks.map(task => {
-      const dateStr = _taskDateStr(task);
-      const dateLbl = dateStr === today ? 'Today' : dateStr === tomorrow ? 'Tomorrow' : dateStr;
-      const prioMap  = { high: 'wt-badge-high', medium: 'wt-badge-medium', low: 'wt-badge-low' };
-      const prioLbl  = task.priority ? task.priority[0].toUpperCase() + task.priority.slice(1) : '';
-      const alarmTs  = task.time ? new Date(dateStr + 'T' + task.time + ':00').getTime() : 0;
-      const hasAlarm = !task.done && alarmTs > Date.now();
-      return `
-        <div class="wt-task-item" data-task-id="${task.id}">
-          <div class="wt-task-cb ${task.done ? 'done' : ''}" data-wt-toggle="${task.id}"></div>
-          <div class="wt-task-body">
-            <div class="wt-task-title ${task.done ? 'done' : ''}">${escapeHtml(task.title)}</div>
-            <div class="wt-task-meta">
-              <span class="wt-badge wt-badge-date">${dateLbl}</span>
-              ${task.time ? `<span class="wt-badge wt-badge-time">⏰ ${task.time}</span>` : ''}
-              ${prioLbl ? `<span class="wt-badge ${prioMap[task.priority] || ''}">${prioLbl}</span>` : ''}
-            </div>
-          </div>
-          <div class="wt-task-actions">
-            <button class="wt-action-btn${hasAlarm ? ' alarm-on' : ''}" data-wt-alarm="${task.id}" title="${hasAlarm ? 'Alarm set' : 'No alarm'}">🔔</button>
-            <button class="wt-action-btn" data-wt-del="${task.id}" title="Delete">🗑️</button>
-          </div>
-        </div>`;
-    }).join('');
+    // Bucket tasks
+    const buckets = { today: [], tomorrow: [], later: [], done: [] };
+    waTasks.forEach(t => {
+      if (t.done) { buckets.done.push(t); return; }
+      const ds = _taskDateStr(t);
+      if (ds === today)         buckets.today.push(t);
+      else if (ds === tomorrow) buckets.tomorrow.push(t);
+      else                      buckets.later.push(t);
+    });
+    // Sort each bucket by time
+    const sortBucket = arr => arr.sort((a, b) => {
+      const ta = a.time || '99:99', tb = b.time || '99:99';
+      return ta < tb ? -1 : ta > tb ? 1 : 0;
+    });
+    Object.values(buckets).forEach(sortBucket);
 
-    listEl.querySelectorAll('[data-wt-toggle]').forEach(el => {
+    // Update sidebar counts
+    panel.querySelectorAll('[data-wt-nav]').forEach(nav => {
+      const key = nav.dataset.wtNav;
+      const cnt = nav.querySelector('.wt-nav-count');
+      if (cnt && buckets[key]) cnt.textContent = buckets[key].length;
+      nav.classList.toggle('active', key === _taskPanelFilter);
+    });
+
+    // Render content
+    const content = panel.querySelector('.wt-content-scroll');
+    if (!content) return;
+
+    const sectionTitle = { today: 'Today', tomorrow: 'Tomorrow', later: 'Later', done: 'Completed' }[_taskPanelFilter] || 'Today';
+    const headerEl = panel.querySelector('.wt-section-title');
+    if (headerEl) headerEl.textContent = sectionTitle;
+
+    const tasks = buckets[_taskPanelFilter] || [];
+    const prioTag  = { high: 'wt-tag-high', medium: 'wt-tag-medium', low: 'wt-tag-low' };
+
+    let html = '';
+    if (!tasks.length) {
+      html = `<div class="wt-empty">No tasks yet</div>`;
+    } else {
+      html = tasks.map(task => {
+        const dateStr = _taskDateStr(task);
+        const dateLbl = dateStr === today ? '' : dateStr === tomorrow ? '' : _formatDateNice(dateStr);
+        return `
+          <div class="wt-task-row" data-task-id="${task.id}">
+            <div class="wt-cb ${task.done ? 'done' : ''}" data-wt-toggle="${task.id}"></div>
+            <div class="wt-task-info">
+              <div class="wt-task-name ${task.done ? 'done' : ''}">${escapeHtml(task.title)}</div>
+              ${task.description ? `<div class="wt-task-desc">${escapeHtml(task.description)}</div>` : `<div class="wt-task-desc" style="opacity:.4">Description</div>`}
+              <div class="wt-task-tags">
+                ${task.time ? `<span class="wt-tag wt-tag-time">⏰ ${task.time}</span>` : ''}
+                ${task.priority && task.priority !== 'medium' ? `<span class="wt-tag ${prioTag[task.priority] || ''}">${task.priority}</span>` : ''}
+                ${dateLbl ? `<span class="wt-tag wt-tag-date">${dateLbl}</span>` : ''}
+              </div>
+            </div>
+            <button class="wt-del-btn" data-wt-del="${task.id}" title="Delete">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg>
+            </button>
+          </div>`;
+      }).join('');
+    }
+
+    // Add task form (inline, collapsed by default)
+    html += `
+      <button class="wt-add-link" id="wt-add-link-btn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Add task
+      </button>
+      <div class="wt-inline-form" id="wt-inline-form">
+        <input type="text" class="wt-form-field" id="wt-f-title" placeholder="Task name" autocomplete="off">
+        <input type="text" class="wt-form-field" id="wt-f-desc" placeholder="Description (optional)" autocomplete="off">
+        <div class="wt-form-pills" id="wt-f-pills">
+          <span class="wt-pill${_taskPanelFilter === 'today' || _taskPanelFilter === 'done' ? ' active' : ''}" data-wt-pill="today">Today</span>
+          <span class="wt-pill${_taskPanelFilter === 'tomorrow' ? ' active' : ''}" data-wt-pill="tomorrow">Tomorrow</span>
+          <span class="wt-pill" data-wt-pill="custom">Set date</span>
+          <input type="date" class="wt-date-input" id="wt-f-date-custom">
+        </div>
+        <div class="wt-remind-row" id="wt-f-remind-row">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
+          Remind me
+          <input type="time" class="wt-time-input" id="wt-f-time" title="Set reminder time">
+        </div>
+        <div class="wt-priority-row">
+          <span>Priority</span>
+          <span class="wt-pill" data-wt-prio="low">Low</span>
+          <span class="wt-pill active" data-wt-prio="medium">Medium</span>
+          <span class="wt-pill" data-wt-prio="high">High</span>
+        </div>
+        <div class="wt-form-actions">
+          <button class="wt-form-submit" id="wt-f-submit">Add task</button>
+          <button class="wt-form-cancel" id="wt-f-cancel">Cancel</button>
+        </div>
+      </div>`;
+
+    content.innerHTML = html;
+
+    /* ── Wire up interactions ── */
+    // Toggle done
+    content.querySelectorAll('[data-wt-toggle]').forEach(el => {
       el.addEventListener('click', () => {
         const id = el.dataset.wtToggle;
-        chrome.storage.local.get('waTasks', ({ waTasks = [] }) => {
-          const task = waTasks.find(t => t.id === id);
+        chrome.storage.local.get('waTasks', ({ waTasks: ts = [] }) => {
+          const task = ts.find(t => t.id === id);
           if (!task) return;
           task.done = !task.done;
-          if (task.done) _cancelTaskAlarm(id);
-          else _setTaskAlarm(task);
-          chrome.storage.local.set({ waTasks });
+          if (task.done) _cancelTaskAlarm(id); else _setTaskAlarm(task);
+          chrome.storage.local.set({ waTasks: ts });
         });
       });
     });
-
-    listEl.querySelectorAll('[data-wt-del]').forEach(el => {
+    // Delete
+    content.querySelectorAll('[data-wt-del]').forEach(el => {
       el.addEventListener('click', () => {
         const id = el.dataset.wtDel;
         _cancelTaskAlarm(id);
-        chrome.storage.local.get('waTasks', ({ waTasks = [] }) => {
-          chrome.storage.local.set({ waTasks: waTasks.filter(t => t.id !== id) });
+        chrome.storage.local.get('waTasks', ({ waTasks: ts = [] }) => {
+          chrome.storage.local.set({ waTasks: ts.filter(t => t.id !== id) });
         });
       });
     });
+
+    // + Add task toggle
+    const addLink = content.querySelector('#wt-add-link-btn');
+    const form    = content.querySelector('#wt-inline-form');
+    addLink?.addEventListener('click', () => {
+      form.classList.toggle('open');
+      if (form.classList.contains('open')) content.querySelector('#wt-f-title')?.focus();
+    });
+    content.querySelector('#wt-f-cancel')?.addEventListener('click', () => {
+      form.classList.remove('open');
+    });
+
+    // Date pills
+    let _formDate = (_taskPanelFilter === 'tomorrow') ? 'tomorrow' : 'today';
+    const dateCustom = content.querySelector('#wt-f-date-custom');
+    content.querySelectorAll('[data-wt-pill]').forEach(pill => {
+      pill.addEventListener('click', () => {
+        content.querySelectorAll('[data-wt-pill]').forEach(p => p.classList.remove('active'));
+        pill.classList.add('active');
+        _formDate = pill.dataset.wtPill;
+        dateCustom.style.display = _formDate === 'custom' ? 'inline-block' : 'none';
+        if (_formDate === 'custom' && !dateCustom.value) dateCustom.value = _getTodayStr();
+      });
+    });
+
+    // Priority pills
+    let _formPrio = 'medium';
+    content.querySelectorAll('[data-wt-prio]').forEach(pill => {
+      pill.addEventListener('click', () => {
+        content.querySelectorAll('[data-wt-prio]').forEach(p => p.classList.remove('active'));
+        pill.classList.add('active');
+        _formPrio = pill.dataset.wtPrio;
+      });
+    });
+
+    // Submit
+    const doSubmit = () => {
+      const title = content.querySelector('#wt-f-title')?.value.trim();
+      if (!title) return;
+      const desc = content.querySelector('#wt-f-desc')?.value.trim() || '';
+      const dateVal = _formDate === 'custom' ? (dateCustom.value || _getTodayStr()) : _formDate;
+      const time = content.querySelector('#wt-f-time')?.value || '';
+      const task = {
+        id: _genTaskId(), title, description: desc,
+        date: dateVal, time, priority: _formPrio,
+        done: false, createdAt: Date.now()
+      };
+      chrome.storage.local.get('waTasks', ({ waTasks: ts = [] }) => {
+        ts.push(task);
+        chrome.storage.local.set({ waTasks: ts }, () => {
+          _setTaskAlarm(task);
+          form.classList.remove('open');
+        });
+      });
+    };
+    content.querySelector('#wt-f-submit')?.addEventListener('click', doSubmit);
+    content.querySelector('#wt-f-title')?.addEventListener('keydown', e => { if (e.key === 'Enter') doSubmit(); });
   });
 }
 
@@ -3108,94 +3903,54 @@ function initTaskPanel() {
 
   // Hide the WA intro screen, insert task panel as sibling
   section.style.display = 'none';
-  section.dataset.waTaskHidden = '1';    // flag so we can restore later
+  section.dataset.waTaskHidden = '1';
 
-  const parent = section.parentElement;
   const panel = document.createElement('div');
   panel.id = TASK_PANEL_ID;
-  // Fill the same space the intro section occupied
-  panel.style.cssText = `
-    display:flex; flex-direction:column; flex:1;
-    width:100%; height:100%;
-    background:#0b141a; overflow:hidden; z-index:10;
-  `;
   panel.innerHTML = `
-    <div class="wt-header">
-      <div class="wt-title">📋 Tasks</div>
-      <div class="wt-tabs">
-        <button class="wt-tab${_taskPanelFilter === 'today'    ? ' active' : ''}" data-wt-filter="today">Today</button>
-        <button class="wt-tab${_taskPanelFilter === 'tomorrow' ? ' active' : ''}" data-wt-filter="tomorrow">Tomorrow</button>
-        <button class="wt-tab${_taskPanelFilter === 'all'      ? ' active' : ''}" data-wt-filter="all">All</button>
-        <button class="wt-tab${_taskPanelFilter === 'done'     ? ' active' : ''}" data-wt-filter="done">Done</button>
+    <!-- Sidebar -->
+    <div class="wt-sidebar">
+      <div class="wt-sidebar-title">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+        Tasks
+      </div>
+      <div class="wt-nav-item active" data-wt-nav="today">
+        <span>Today</span>
+        <span class="wt-nav-count">0</span>
+      </div>
+      <div class="wt-nav-item" data-wt-nav="tomorrow">
+        <span>Tomorrow</span>
+        <span class="wt-nav-count">0</span>
+      </div>
+      <div class="wt-nav-item" data-wt-nav="later">
+        <span>Later</span>
+        <span class="wt-nav-count">0</span>
+      </div>
+      <div class="wt-nav-item" data-wt-nav="done">
+        <span>Completed</span>
+        <span class="wt-nav-count">0</span>
       </div>
     </div>
-    <div class="wt-add-form">
-      <div class="wt-form-row">
-        <input type="text" class="wt-input" id="wt-new-title" placeholder="New task…" autocomplete="off">
-        <button class="wt-add-btn" id="wt-add-btn">Add</button>
+    <!-- Main Content -->
+    <div class="wt-main">
+      <div class="wt-content-header">
+        <h2 class="wt-section-title">Today</h2>
       </div>
-      <div class="wt-form-row">
-        <select class="wt-select" id="wt-new-date">
-          <option value="today">Today</option>
-          <option value="tomorrow">Tomorrow</option>
-          <option value="custom">Custom…</option>
-        </select>
-        <input type="date" class="wt-input" id="wt-new-date-custom" style="display:none;max-width:150px">
-        <input type="time" class="wt-select" id="wt-new-time" title="Alarm time (optional)">
-        <select class="wt-select" id="wt-new-priority">
-          <option value="medium">Medium</option>
-          <option value="low">Low</option>
-          <option value="high">High</option>
-        </select>
-      </div>
+      <div class="wt-content-scroll"></div>
     </div>
-    <div class="wt-list" id="wt-task-list"></div>
   `;
 
-  // Insert right after the hidden section (same position in parent)
   section.insertAdjacentElement('afterend', panel);
 
-  // Tab switching
-  panel.querySelectorAll('[data-wt-filter]').forEach(tab => {
-    tab.addEventListener('click', () => {
-      _taskPanelFilter = tab.dataset.wtFilter;
-      panel.querySelectorAll('[data-wt-filter]').forEach(t =>
-        t.classList.toggle('active', t.dataset.wtFilter === _taskPanelFilter)
-      );
+  // Sidebar navigation
+  panel.querySelectorAll('[data-wt-nav]').forEach(nav => {
+    nav.addEventListener('click', () => {
+      _taskPanelFilter = nav.dataset.wtNav;
       renderTaskPanel();
     });
   });
 
-  // Custom date toggle
-  const dateSelect = panel.querySelector('#wt-new-date');
-  const dateCustom = panel.querySelector('#wt-new-date-custom');
-  dateSelect.addEventListener('change', () => {
-    dateCustom.style.display = dateSelect.value === 'custom' ? '' : 'none';
-    if (dateSelect.value === 'custom' && !dateCustom.value) dateCustom.value = _getTodayStr();
-  });
-
-  // Add task
-  const doAddTask = () => {
-    const titleEl = panel.querySelector('#wt-new-title');
-    const title   = titleEl.value.trim();
-    if (!title) return;
-    const dateVal    = dateSelect.value === 'custom' ? (dateCustom.value || _getTodayStr()) : dateSelect.value;
-    const time       = panel.querySelector('#wt-new-time').value || '';
-    const priority   = panel.querySelector('#wt-new-priority').value || 'medium';
-    const task = { id: _genTaskId(), title, date: dateVal, time, priority, done: false, createdAt: Date.now() };
-    chrome.storage.local.get('waTasks', ({ waTasks = [] }) => {
-      waTasks.push(task);
-      chrome.storage.local.set({ waTasks }, () => {
-        _setTaskAlarm(task);
-        titleEl.value = '';
-      });
-    });
-  };
-
-  panel.querySelector('#wt-add-btn').addEventListener('click', doAddTask);
-  panel.querySelector('#wt-new-title').addEventListener('keydown', e => { if (e.key === 'Enter') doAddTask(); });
-
-  console.log('[WA-TASK] panel injected — replaced intro section');
+  console.log('[WA-TASK] panel injected — section-based UI');
   renderTaskPanel();
 }
 
@@ -3220,14 +3975,10 @@ function _syncTaskPanel() {
   }
 }
 
-// ─── Single observer: re-inject pin bar + pin header button ──────────────────
+// ─── Single observer: pin header button + task panel ──────────────────────────
 let _pinBtnLastChat = '';
 let _lastChatOpenState = null;
 const _pinBarObserver = new MutationObserver(() => {
-  // Re-inject bar if WA re-renders #pane-side
-  if (document.querySelector('#pane-side') && !document.getElementById('wa-ext-pin-bar')) {
-    initPinnedBar();
-  }
   // Inject / refresh header pin button when chat opens or changes
   const curChat = document.querySelector('[data-testid="conversation-info-header-chat-title"]')?.textContent?.trim() || '';
   if (curChat && (!document.getElementById('wa-ext-pin-btn') || curChat !== _pinBtnLastChat)) {
@@ -3253,11 +4004,10 @@ const _pinBarObserver = new MutationObserver(() => {
   }
 });
 _pinBarObserver.observe(document.body, { childList: true, subtree: true });
-initPinnedBar();
 console.log('[WA-TASK] content script ready — observer active');
 
-// Live-sync: update both bar, header button, and task list when storage changes
+// Live-sync: update pins, header button, and task list when storage changes
 chrome.storage.onChanged.addListener(changes => {
-  if (changes.pinnedChats) { renderPinnedBar(); _updatePinHeaderBtn(); }
+  if (changes.pinnedChats) { applyVirtualPins(); _updatePinHeaderBtn(); }
   if (changes.waTasks)     { renderTaskPanel(); }
 });
