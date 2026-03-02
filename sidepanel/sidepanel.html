@@ -179,21 +179,24 @@
         <input type="text" id="campaignName" class="input" placeholder="e.g. June Promo, Cold Outreach Wave 1">
       </div>
 
-      <!-- Image Attachment (optional) -->
+      <!-- Image/Video Attachment (optional) -->
       <div class="form-group">
-        <label class="label">📷 Attach Image <span style="font-weight:400;text-transform:none">(optional — message becomes caption)</span></label>
-        <input type="file" id="imageFile" accept="image/*" style="display:none">
+        <label class="label">📷 Attach Image / Video <span style="font-weight:400;text-transform:none">(optional — message becomes caption)</span></label>
+        <input type="file" id="imageFile" accept="image/*,video/mp4,video/3gpp,video/quicktime" style="display:none">
         <div class="row gap-6 align-center">
-          <button class="btn btn-outline btn-sm" id="imagePickBtn" type="button">🖼 Choose Image</button>
+          <button class="btn btn-outline btn-sm" id="imagePickBtn" type="button">🖼 Choose Image / Video</button>
           <span class="muted-text" id="imageFileName">No file chosen</span>
           <button class="btn btn-outline btn-sm" id="imageClearBtn" type="button" style="display:none">✕</button>
         </div>
-        <div id="imagePreview" style="display:none;margin-top:8px"><img id="imagePreviewImg" style="max-width:100%;max-height:120px;border-radius:6px;border:1px solid #30363d" alt="preview"></div>
+        <div id="imagePreview" style="display:none;margin-top:8px">
+          <img id="imagePreviewImg" style="max-width:100%;max-height:120px;border-radius:6px;border:1px solid #30363d" alt="preview">
+          <video id="videoPreviewEl" style="display:none;max-width:100%;max-height:120px;border-radius:6px;border:1px solid #30363d" controls muted></video>
+        </div>
       </div>
 
       <!-- Message Template -->
       <div class="form-group">
-        <label class="label">Message Template A <span style="font-weight:400;text-transform:none" id="captionHint" style="display:none">(used as image caption)</span></label>
+        <label class="label">Message Template A <span style="font-weight:400;text-transform:none" id="captionHint" style="display:none">(used as media caption)</span></label>
         <div class="hint mb-6">Variables: <code>{name}</code> <code>{phone}</code> <code>{company}</code> or any CSV column</div>
         <textarea id="msgTemplate" class="textarea" rows="6" placeholder="Hi {name}! I wanted to reach out about..."></textarea>
         <div class="row justify-between mt-4">
