@@ -6,7 +6,8 @@ const SEL = {
     'button[data-testid="compose-btn-send"]',
     '[data-testid="compose-btn-send"]',
     'button[aria-label="Send"]',
-    'span[data-icon="send"]'
+    'span[data-icon="send"]',
+    'span[data-icon="send-light"]'
   ],
   msgContainer: [
     '[data-testid="msg-container"]',
@@ -21,13 +22,20 @@ const SEL = {
     '[data-testid="msg-check"]'
   ],
   msgText: [
+    '[data-testid="selectable-text"]',
     '.selectable-text.copyable-text',
     'span.selectable-text',
-    '.copyable-text span'
+    '.copyable-text span',
+    '.copyable-text',
+    '[class*="selectable-text"]',
+    '[class*="copyable-text"]'
   ],
   qrCode: ['canvas[aria-label]', '[data-testid="qrcode"]'],
   invalidDialog: ['[data-animate-modal-popup]', '[data-testid="popup-contents"]'],
   attachBtn: [
+    'footer [data-testid="clip"]',
+    'footer [data-testid="attach-menu-plus"]',
+    'footer span[data-icon="attach-menu-plus"]',
     '[data-testid="clip"]',
     '[data-testid="attach-menu-plus"]',
     'span[data-icon="attach-menu-plus"]'
@@ -71,6 +79,47 @@ async function waitForEl(selectors, timeout = 12000) {
   const start = Date.now();
   while (Date.now() - start < timeout) {
     const el = findEl(selectors);
+    if (el) return el;
+    await sleep(300);
+  }
+  return null;
+}
+
+// Find first element matching predicate in document and all shadow roots (for WA Web's React/drawer)
+function findInDocumentAndShadowRoots(predicate, root = document) {
+  if (!root) return null;
+  const walk = (node) => {
+    if (predicate(node)) return node;
+    const children = node.children || node.querySelectorAll ? Array.from(node.children || []) : [];
+    for (let i = 0; i < children.length; i++) {
+      const found = walk(children[i]);
+      if (found) return found;
+    }
+    if (node.shadowRoot) {
+      const found = walk(node.shadowRoot);
+      if (found) return found;
+    }
+    return null;
+  };
+  const start = root.body || root;
+  return walk(start);
+}
+
+function findElIncludingShadow(selectors) {
+  const list = Array.isArray(selectors) ? selectors : [selectors];
+  for (const s of list) {
+    try {
+      const el = document.querySelector(s) || findInDocumentAndShadowRoots(el => el.matches && el.matches(s));
+      if (el) return el;
+    } catch (_) {}
+  }
+  return null;
+}
+
+async function waitForElIncludingShadow(selectors, timeout = 12000) {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    const el = findElIncludingShadow(selectors);
     if (el) return el;
     await sleep(300);
   }
@@ -239,63 +288,103 @@ async function insertMessageText(el, text) {
   }
 }
 
-// ─── Send Image from base64 data with caption ─────────────────────────────────
+// ─── Send Image or Video from base64 data with caption ───────────────────────
+const WA_MEDIA_DEBUG = true; // set false to silence
+function _mediaLog(...a) { if (WA_MEDIA_DEBUG) console.warn('[WA-MEDIA]', ...a); }
+
 async function sendImageWithCaption(imageData, imageMime, imageName, caption) {
+  _mediaLog('sendImageWithCaption start, dataLen:', (imageData || '').length);
   if (findEl(SEL.qrCode)) return { success: false, error: 'WA Web not logged in — scan QR first' };
 
-  // Wait for chat to be ready
   const header = await waitForEl(['#main header', '#main [data-testid="conversation-header"]'], 12000);
-  if (!header) return { success: false, error: 'Chat did not open' };
-  await sleep(600);
+  if (!header) { _mediaLog('FAIL: chat header not found'); return { success: false, error: 'Chat did not open' }; }
+  _mediaLog('chat open');
+  await sleep(800);
 
-  // Convert base64 to File object
-  const base64 = imageData.split(',')[1];
-  const binary  = atob(base64);
-  const bytes   = new Uint8Array(binary.length);
+  const mime = imageMime || 'image/jpeg';
+  const isVideo = mime.startsWith('video/');
+  const defaultName = imageName || (isVideo ? 'video.mp4' : 'image.jpg');
+
+  const commaIdx = (imageData || '').indexOf(',');
+  const base64 = commaIdx >= 0 ? (imageData || '').slice(commaIdx + 1).trim() : (imageData || '').trim();
+  if (!base64) return { success: false, error: 'Invalid media data' };
+  let binary;
+  try { binary = atob(base64.replace(/\s/g, '')); } catch (e) { _mediaLog('FAIL: atob', e); return { success: false, error: 'Invalid file data' }; }
+  const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  const blob = new Blob([bytes], { type: imageMime || 'image/jpeg' });
-  const file = new File([blob], imageName || 'image.jpg', { type: imageMime || 'image/jpeg' });
+  const file = new File([new Blob([bytes], { type: mime })], defaultName, { type: mime });
+  _mediaLog('file created', defaultName, file.size, 'bytes');
 
-  // Approach 1: drag-and-drop onto the chat area (most reliable — triggers WA's native handler)
-  const chatArea = document.querySelector('#main');
-  if (chatArea) {
-    const dt = new DataTransfer();
-    dt.items.add(file);
-    chatArea.dispatchEvent(new DragEvent('dragenter', { bubbles: true, cancelable: true, dataTransfer: dt }));
-    await sleep(100);
-    chatArea.dispatchEvent(new DragEvent('dragover',  { bubbles: true, cancelable: true, dataTransfer: dt }));
-    await sleep(100);
-    chatArea.dispatchEvent(new DragEvent('drop',      { bubbles: true, cancelable: true, dataTransfer: dt }));
-    await sleep(2500);
+  const attachBtn = findEl(SEL.attachBtn);
+  if (!attachBtn) { _mediaLog('FAIL: attach button not found'); return { success: false, error: 'Attach button not found' }; }
+  _mediaLog('attach btn found, clicking');
+  attachBtn.click();
+  await sleep(1200);
+
+  const acceptImageOrVideo = (el) => el.type === 'file' && (!el.accept || /image|video/.test(el.accept));
+  const findFileInput = () => {
+    const inDrawer = (sel) => { const d = document.querySelector(sel); return d ? d.querySelector('input[type="file"]') : null; };
+    return findInDocumentAndShadowRoots(el => el.tagName === 'INPUT' && acceptImageOrVideo(el)) ||
+      document.querySelector(SEL.imageInput) ||
+      document.querySelector('footer input[accept*="image"]') ||
+      document.querySelector('footer input[accept*="video"]') ||
+      inDrawer('[data-testid="drawer-right"]') || inDrawer('[role="dialog"]') || inDrawer('[class*="drawer"]') ||
+      document.querySelector('#main input[accept*="image"]') ||
+      document.querySelector('#main input[accept*="video"]') ||
+      document.querySelector('input[accept*="image"]') ||
+      document.querySelector('input[accept*="video"]') ||
+      findInDocumentAndShadowRoots(el => el.tagName === 'INPUT' && el.type === 'file') ||
+      document.querySelector('#main input[type="file"]') ||
+      document.querySelector('input[type="file"]');
+  };
+  let fileInput = findFileInput();
+  for (let i = 0; !fileInput && i < 8; i++) {
+    await sleep(400);
+    fileInput = findFileInput();
   }
+  if (!fileInput) { _mediaLog('FAIL: file input not found'); return { success: false, error: 'File input not found — try again' }; }
+  _mediaLog('file input found, setting files');
 
-  // Fallback: file input injection (if drag-drop didn't open the preview)
-  if (!findEl(SEL.captionInput)) {
-    const fileInput = document.querySelector(SEL.imageInput);
-    if (!fileInput) return { success: false, error: 'Image input not found' };
-    const dt2 = new DataTransfer();
-    dt2.items.add(file);
-    fileInput.files = dt2.files;
-    fileInput.dispatchEvent(new Event('change', { bubbles: true }));
-    await sleep(2500);
+  fileInput.focus?.();
+  fileInput.value = '';
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  fileInput.files = dt.files;
+  fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+  fileInput.dispatchEvent(new Event('input', { bubbles: true }));
+  await sleep(500);
+  fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+  await sleep(isVideo ? 5000 : 3000);
+
+  // Step 3: Wait for media preview (caption area or send button)
+  const captionSelectors = [
+    '[data-testid="media-caption-input-container"] div[contenteditable="true"]',
+    'div[contenteditable="true"][data-tab="11"]',
+    '#main div[contenteditable="true"]'
+  ];
+  let captionEl = null;
+  for (const sel of captionSelectors) {
+    captionEl = document.querySelector(sel);
+    if (captionEl && captionEl.closest('#main')) break;
   }
+  if (!captionEl) await sleep(2000);
 
-  // Type caption in media preview caption box
-  if (caption) {
-    const captionEl = await waitForEl(SEL.captionInput, 6000);
+  if (caption && String(caption).trim()) {
+    captionEl = captionEl || document.querySelector('[data-testid="media-caption-input-container"] div[contenteditable]') || document.querySelector('div[contenteditable][data-tab="11"]');
     if (captionEl) {
       captionEl.focus();
-      await sleep(300);
-      await insertMessageText(captionEl, caption);
       await sleep(400);
+      await insertMessageText(captionEl, String(caption).trim());
+      await sleep(500);
     }
   }
 
-  // Click send in media preview
-  const sendBtn = await waitForEl(SEL.sendButton, 8000);
-  if (!sendBtn) return { success: false, error: 'Media send button not found' };
+  const sendBtn = await waitForElIncludingShadow(SEL.sendButton, 12000);
+  if (!sendBtn) { _mediaLog('FAIL: send button not found after media attach'); return { success: false, error: 'Send button not found — is media preview open?' }; }
+  _mediaLog('send btn found, clicking');
   sendBtn.click();
-  await sleep(1000);
+  await sleep(1500);
+  _mediaLog('done');
   return { success: true };
 }
 
@@ -420,13 +509,70 @@ let autoReplyConfig   = null;
 let arLastIncoming    = null;
 let arReplying        = false;
 let arCheckTimer      = null;
+let arLastIncomingByChat = {};
+let arRepliedAtByChat    = {};
+let arPerChatPollerTimer = null;
+let arPollTimer = null;
+const AR_PER_CHAT_COOLDOWN_MS = 45000;
+const AR_POLL_INTERVAL_MS = 3000;
+
+function getCurrentChatKey() {
+  const info = typeof _getCurrentChatInfo === 'function' ? _getCurrentChatInfo() : null;
+  if (info?.name) return info.name;
+  const title = document.querySelector('[data-testid="conversation-info-header-chat-title"]')?.textContent?.trim()
+    || document.querySelector('#main header span[dir="auto"]')?.textContent?.trim() || '';
+  return title;
+}
 
 function getMessageText(el) {
   for (const s of SEL.msgText) {
-    const t = el.querySelector(s);
-    if (t?.innerText?.trim()) return t.innerText.trim();
+    const nodes = el.querySelectorAll(s);
+    for (const t of nodes) {
+      const txt = (t.innerText || t.textContent || '').trim();
+      if (txt && txt.length > 0) return txt;
+    }
   }
-  return null;
+  const copyable = el.querySelector('[class*="copyable"]');
+  if (copyable) {
+    const txt = (copyable.innerText || copyable.textContent || '').trim();
+    if (txt) return txt;
+  }
+  const fallback = (el.innerText || el.textContent || '').trim();
+  return fallback || null;
+}
+
+function getIncomingMessageContainers() {
+  const main = document.querySelector('#main');
+  if (!main) return [];
+  const all = main.querySelectorAll('[data-testid="msg-container"], .message-in, .message-out');
+  const bubbles = [];
+  const seen = new Set();
+  for (const el of all) {
+    const root = el.closest('.message-in, .message-out') || el;
+    if (seen.has(root)) continue;
+    seen.add(root);
+    const isIn = root.classList.contains('message-in') || root.closest('.message-in');
+    const isOut = root.classList.contains('message-out') || root.closest('.message-out');
+    if (isOut) continue;
+    if (isIn) { bubbles.push(root); continue; }
+    const hasOutgoing = SEL.outgoingIndicator.some(s => root.querySelector(s));
+    if (!hasOutgoing) bubbles.push(root);
+  }
+  return bubbles;
+}
+
+/** Last N messages in order (oldest first): { role: 'user'|'assistant', text } — user = them, assistant = me */
+function getRecentChatHistory(maxMessages = 12) {
+  const all = document.querySelectorAll('[data-testid="msg-container"], .message-in, .message-out');
+  const list = [];
+  for (const el of all) {
+    const txt = getMessageText(el);
+    if (!txt || txt.length > 500) continue;
+    const isOut = el.classList.contains('message-out') || SEL.outgoingIndicator.some(s => el.querySelector(s));
+    list.push({ role: isOut ? 'assistant' : 'user', text: txt });
+  }
+  const slice = list.slice(-maxMessages);
+  return slice;
 }
 
 async function startAutoReply(config) {
@@ -434,48 +580,87 @@ async function startAutoReply(config) {
   autoReplyConfig = config;
 
   const chatMain = document.querySelector('#main');
-  if (!chatMain) return { success: false, error: 'No chat open — open a WhatsApp conversation first' };
+  if (!config.perChat && !chatMain) return { success: false, error: 'No chat open — open a WhatsApp conversation first' };
 
-  // Snapshot last incoming message so we don't reply to old ones
-  const existing = Array.from(document.querySelectorAll('.message-in'));
-  arLastIncoming = existing.length ? getMessageText(existing[existing.length - 1]) : null;
+  if (chatMain) {
+    const existing = getIncomingMessageContainers();
+    arLastIncoming = existing.length ? getMessageText(existing[existing.length - 1]) : null;
+    autoReplyObserver = new MutationObserver(() => {
+      clearTimeout(arCheckTimer);
+      arCheckTimer = setTimeout(checkAndReply, 800);
+    });
+    autoReplyObserver.observe(chatMain, { childList: true, subtree: true });
+    arPollTimer = setInterval(checkAndReply, AR_POLL_INTERVAL_MS);
+  }
 
-  autoReplyObserver = new MutationObserver(() => {
-    clearTimeout(arCheckTimer);
-    arCheckTimer = setTimeout(checkAndReply, 800);
-  });
-  autoReplyObserver.observe(chatMain, { childList: true, subtree: true });
+  if (config.perChat) {
+    arPerChatPollerTimer = setInterval(perChatPollUnread, 6000);
+  }
   return { success: true };
+}
+
+async function perChatPollUnread() {
+  if (!autoReplyConfig?.perChat || arReplying) return;
+  const pane = document.querySelector('#pane-side');
+  if (!pane) return;
+  const rows = getVisibleChatRows();
+  for (const row of rows) {
+    if (!rowMatchesFilter(row, 'unread')) continue;
+    const name = getChatName(row);
+    if (!name) continue;
+    if (arRepliedAtByChat[name] && (Date.now() - arRepliedAtByChat[name] < AR_PER_CHAT_COOLDOWN_MS)) continue;
+    row.click();
+    await sleep(1500);
+    await checkAndReply();
+    break;
+  }
 }
 
 function stopAutoReply() {
   if (autoReplyObserver) { autoReplyObserver.disconnect(); autoReplyObserver = null; }
   clearTimeout(arCheckTimer);
+  if (arPerChatPollerTimer) { clearInterval(arPerChatPollerTimer); arPerChatPollerTimer = null; }
+  if (arPollTimer) { clearInterval(arPollTimer); arPollTimer = null; }
   autoReplyConfig = null;
   arLastIncoming  = null;
   arReplying      = false;
+  arLastIncomingByChat = {};
+  arRepliedAtByChat    = {};
 }
 
 async function checkAndReply() {
   if (!autoReplyConfig || arReplying) return;
 
-  const incoming = Array.from(document.querySelectorAll('.message-in'));
+  if (autoReplyConfig.perChat) {
+    const key = getCurrentChatKey();
+    if (key) arLastIncoming = arLastIncomingByChat[key] ?? null;
+  }
+
+  const incoming = getIncomingMessageContainers();
   if (!incoming.length) return;
 
   const last = incoming[incoming.length - 1];
   const text = getMessageText(last);
   if (!text || text === arLastIncoming) return;
 
-  // Keyword filter
+  // Keyword filter: if message doesn't match, either skip or reply (fixed text or AI)
+  let usedNoKeywordReply = false; // true = message had no keyword; we still reply (fixed or AI)
   if (autoReplyConfig.keyword) {
     const keywords = autoReplyConfig.keyword.split(',').map(k => k.trim().toLowerCase()).filter(Boolean);
     if (!keywords.some(kw => text.toLowerCase().includes(kw))) {
-      arLastIncoming = text;
-      return;
+      const noKeywordReply = (autoReplyConfig.noKeywordReply || '').trim();
+      const noKeywordUseAI = !!autoReplyConfig.noKeywordUseAI;
+      if (!noKeywordReply && !noKeywordUseAI) {
+        arLastIncoming = text;
+        if (autoReplyConfig.perChat) { const k = getCurrentChatKey(); if (k) arLastIncomingByChat[k] = text; }
+        return;
+      }
+      usedNoKeywordReply = true;
     }
   }
 
   arLastIncoming = text;
+  if (autoReplyConfig.perChat) { const k = getCurrentChatKey(); if (k) arLastIncomingByChat[k] = text; }
   arReplying = true;
 
   await sleep(autoReplyConfig.delay * 1000);
@@ -492,6 +677,7 @@ async function checkAndReply() {
     if (!inHours) {
       const outsideMsg = bh.outsideMsg || "Thanks for reaching out! We're currently outside business hours and will reply soon.";
       const sent = await typeAndSend(outsideMsg);
+      if (autoReplyConfig.perChat) { const k = getCurrentChatKey(); if (k) arRepliedAtByChat[k] = Date.now(); }
       chrome.runtime.sendMessage({ type: 'AUTO_REPLY_LOG', data: { incoming: text, reply: outsideMsg, success: sent, ts: Date.now(), bizHours: true } });
       arReplying = false;
       return;
@@ -499,16 +685,29 @@ async function checkAndReply() {
   }
 
   let replyText;
-  if (autoReplyConfig.mode === 'template') {
+  const noKeywordUseAI = !!autoReplyConfig.noKeywordUseAI;
+  const chatHistory = getRecentChatHistory(12);
+
+  if (usedNoKeywordReply && noKeywordUseAI) {
+    const r = await new Promise(res =>
+      chrome.runtime.sendMessage({ type: 'GET_AI_AUTO_REPLY', data: { text, prompt: autoReplyConfig.prompt, apiKey: autoReplyConfig.apiKey, provider: autoReplyConfig.provider, chatHistory } }, res)
+    );
+    replyText = (r && r.reply && r.reply.trim()) ? r.reply.trim() : ((autoReplyConfig.noKeywordReply || '').trim() || 'How can I help you?');
+    if (!r?.reply && r?.error) console.warn('[WA] AI auto-reply (no-keyword):', r.error);
+  } else if (usedNoKeywordReply && (autoReplyConfig.noKeywordReply || '').trim()) {
+    replyText = (autoReplyConfig.noKeywordReply || '').trim();
+  } else if (autoReplyConfig.mode === 'template') {
     replyText = autoReplyConfig.template || 'Thanks for your message!';
   } else {
     const r = await new Promise(res =>
-      chrome.runtime.sendMessage({ type: 'GET_AI_AUTO_REPLY', data: { text, prompt: autoReplyConfig.prompt, apiKey: autoReplyConfig.apiKey } }, res)
+      chrome.runtime.sendMessage({ type: 'GET_AI_AUTO_REPLY', data: { text, prompt: autoReplyConfig.prompt, apiKey: autoReplyConfig.apiKey, provider: autoReplyConfig.provider, chatHistory } }, res)
     );
-    replyText = r?.reply || autoReplyConfig.template || 'Thanks for your message!';
+    replyText = (r && r.reply && r.reply.trim()) ? r.reply.trim() : (autoReplyConfig.template || 'Thanks for your message! I\'ll get back to you soon.');
+    if (!r?.reply && r?.error) console.warn('[WA] AI auto-reply:', r.error);
   }
 
   const sent = await typeAndSend(replyText);
+  if (autoReplyConfig.perChat) { const k = getCurrentChatKey(); if (k) arRepliedAtByChat[k] = Date.now(); }
   chrome.runtime.sendMessage({ type: 'AUTO_REPLY_LOG', data: { incoming: text, reply: replyText, success: sent, ts: Date.now() } });
   arReplying = false;
 }
@@ -736,24 +935,9 @@ function injectAudioInterceptor() {
   if (document.getElementById('wa-audio-interceptor')) return;
   const script = document.createElement('script');
   script.id = 'wa-audio-interceptor';
-  script.textContent = `(function(){
-    if (window.__waAudioIntercept) return;
-    window.__waAudioIntercept = true;
-    const _orig = URL.createObjectURL.bind(URL);
-    URL.createObjectURL = function(obj) {
-      const url = _orig(obj);
-      if (obj instanceof Blob && obj.type && obj.type.includes('audio')) {
-        const r = new FileReader();
-        r.onload = function() {
-          window.postMessage({ __waAudioCapture: true, url, b64: r.result.split(',')[1], mime: obj.type }, '*');
-        };
-        r.readAsDataURL(obj);
-      }
-      return url;
-    };
-  })();`;
+  script.src = chrome.runtime.getURL('audio-interceptor.js');
+  script.onload = function() { script.remove(); };
   (document.head || document.documentElement).appendChild(script);
-  script.remove();
 
   window.addEventListener('message', e => {
     if (e.data?.__waAudioCapture) {
@@ -1401,21 +1585,23 @@ function injectMeetingStyles() {
     /* ── Hover Reply Button ── */
     #wa-hover-reply {
       position: fixed;
-      width: 26px; height: 26px;
+      width: 28px; height: 28px;
       border-radius: 50%;
       background: #233138;
       border: 1px solid #3b4a54;
       color: #aebac1;
       display: flex; align-items: center; justify-content: center;
       cursor: pointer;
-      z-index: 99990;
+      z-index: 2147483646;
       opacity: 0;
+      visibility: hidden;
       pointer-events: none;
-      transition: opacity 0.1s, background 0.1s, color 0.1s;
-      box-shadow: 0 1px 6px rgba(0,0,0,0.45);
+      transition: opacity 0.15s, visibility 0.15s, background 0.1s, color 0.1s;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.5);
     }
     #wa-hover-reply.whr-visible {
       opacity: 1;
+      visibility: visible;
       pointer-events: auto;
     }
     #wa-hover-reply:hover {
@@ -1817,6 +2003,24 @@ function ensureMeetingBar() {
 }
 
 // ─── Open Unknown Chat (chat with unsaved number) ────────────────────────────
+const WA_FLAG_CDN = 'https://flagcdn.com/w40';
+const WA_COUNTRY_CODES = [
+  { code: '91', dial: '+91', iso: 'in' }, { code: '1', dial: '+1', iso: 'us' },
+  { code: '44', dial: '+44', iso: 'gb' }, { code: '81', dial: '+81', iso: 'jp' },
+  { code: '86', dial: '+86', iso: 'cn' }, { code: '49', dial: '+49', iso: 'de' },
+  { code: '33', dial: '+33', iso: 'fr' }, { code: '61', dial: '+61', iso: 'au' },
+  { code: '55', dial: '+55', iso: 'br' }, { code: '52', dial: '+52', iso: 'mx' },
+  { code: '39', dial: '+39', iso: 'it' }, { code: '34', dial: '+34', iso: 'es' },
+  { code: '971', dial: '+971', iso: 'ae' }, { code: '966', dial: '+966', iso: 'sa' },
+  { code: '65', dial: '+65', iso: 'sg' }, { code: '60', dial: '+60', iso: 'my' },
+  { code: '62', dial: '+62', iso: 'id' }, { code: '63', dial: '+63', iso: 'ph' },
+  { code: '92', dial: '+92', iso: 'pk' }, { code: '880', dial: '+880', iso: 'bd' },
+  { code: '94', dial: '+94', iso: 'lk' }, { code: '977', dial: '+977', iso: 'np' },
+  { code: '234', dial: '+234', iso: 'ng' }, { code: '27', dial: '+27', iso: 'za' },
+  { code: '254', dial: '+254', iso: 'ke' }, { code: '20', dial: '+20', iso: 'eg' },
+  { code: '90', dial: '+90', iso: 'tr' }, { code: '31', dial: '+31', iso: 'nl' },
+  { code: '48', dial: '+48', iso: 'pl' }, { code: '351', dial: '+351', iso: 'pt' },
+];
 
 function injectUnknownChatStyles() {
   if (document.getElementById('wa-unk-styles')) return;
@@ -1895,22 +2099,32 @@ function injectUnknownChatStyles() {
       gap: 8px;
       margin-bottom: 12px;
     }
-    .wa-unk-cc {
-      width: 72px;
+    .wa-unk-cc, .wa-unk-country {
+      width: 82px;
       flex-shrink: 0;
       background: #2a3942;
       border: 1px solid #3b4a54;
       border-radius: 8px;
       color: #e9edef;
-      font-size: 14px;
-      padding: 0 8px;
-      text-align: center;
+      font-size: 12px;
+      padding: 6px 4px;
       outline: none;
       transition: border-color .15s;
+      cursor: pointer;
     }
-    .wa-unk-cc:focus { border-color: #00a884; }
+    .wa-unk-flag {
+      width: 32px; height: 22px; flex-shrink: 0;
+      display: inline-flex; align-items: center; justify-content: center;
+      background: #2a3942; border: 1px solid #3b4a54; border-radius: 4px;
+      overflow: hidden;
+    }
+    .wa-unk-flag-img { width: 100%; height: 100%; object-fit: cover; }
+    .wa-unk-recent-item .wa-unk-flag-img { width: 18px; height: 12px; vertical-align: middle; margin-right: 4px; }
+    .wa-unk-country option { font-size: 12px; padding: 4px; }
+    .wa-unk-country:focus, .wa-unk-cc:focus { border-color: #00a884; }
     .wa-unk-phone {
       flex: 1;
+      min-width: 0;
       background: #2a3942;
       border: 1px solid #3b4a54;
       border-radius: 8px;
@@ -2035,9 +2249,12 @@ function openUnknownChatPanel() {
   const panel = document.createElement('div');
   panel.id = 'wa-unk-panel';
 
-  // Load recent numbers
-  chrome.storage.local.get('unkRecentNums', ({ unkRecentNums = [] }) => {
-    panel.innerHTML = `
+  chrome.runtime.sendMessage({ type: 'GET_FLAG_URLS' }, (flagUrls) => {
+    const urls = flagUrls || {};
+    const flagSrc = (iso) => urls[iso] || (WA_FLAG_CDN + '/' + iso + '.png');
+
+    chrome.storage.local.get('unkRecentNums', ({ unkRecentNums = [] }) => {
+      panel.innerHTML = `
       <div class="wa-unk-header">
         <h3>💬 Chat with Number</h3>
         <button class="wa-unk-close" id="wa-unk-close-btn">
@@ -2046,8 +2263,9 @@ function openUnknownChatPanel() {
       </div>
       <div class="wa-unk-body">
         <div class="wa-unk-row">
-          <input class="wa-unk-cc" id="wa-unk-cc" value="+91" placeholder="+91" />
-          <input class="wa-unk-phone" id="wa-unk-phone" placeholder="Phone number" autocomplete="off" />
+          <span class="wa-unk-flag" id="wa-unk-flag" title="Country"><img src="${flagSrc('in')}" alt="" class="wa-unk-flag-img"></span>
+          <select class="wa-unk-country" id="wa-unk-cc" title="Country">${WA_COUNTRY_CODES.map(c => `<option value="${c.code}" ${c.code === '91' ? 'selected' : ''}>${c.dial}</option>`).join('')}</select>
+          <input class="wa-unk-phone" id="wa-unk-phone" placeholder="10-digit number" autocomplete="tel" maxlength="10" inputmode="numeric" />
         </div>
         <textarea class="wa-unk-msg" id="wa-unk-msg" placeholder="Message (optional)"></textarea>
         <button class="wa-unk-submit" id="wa-unk-go">Open Chat</button>
@@ -2056,29 +2274,41 @@ function openUnknownChatPanel() {
       ${unkRecentNums.length ? `
         <div class="wa-unk-recent">
           <div class="wa-unk-recent-title">Recent</div>
-          ${unkRecentNums.map((r, i) => `
+          ${unkRecentNums.map((r, i) => {
+            const info = WA_COUNTRY_CODES.find(c => c.dial === r.cc || c.code === (r.cc || '').replace('+', ''));
+            const iso = r.iso || (info && info.iso) || 'in';
+            return `
             <div class="wa-unk-recent-item" data-idx="${i}" data-num="${r.full}">
-              <span>${r.cc} ${r.phone}</span>
+              <span><img src="${flagSrc(iso)}" alt="" class="wa-unk-flag-img"> ${r.cc} ${r.phone}</span>
               <button class="wa-unk-recent-del" data-delidx="${i}">&times;</button>
             </div>
-          `).join('')}
+          `; }).join('')}
         </div>
       ` : ''}
     `;
-    side.appendChild(panel);
+      side.appendChild(panel);
 
-    // Wire up
-    const ccInput    = panel.querySelector('#wa-unk-cc');
-    const phoneInput = panel.querySelector('#wa-unk-phone');
-    const msgInput   = panel.querySelector('#wa-unk-msg');
-    const goBtn      = panel.querySelector('#wa-unk-go');
-    const closeBtn   = panel.querySelector('#wa-unk-close-btn');
+      const ccInput    = panel.querySelector('#wa-unk-cc');
+      const phoneInput = panel.querySelector('#wa-unk-phone');
+      const msgInput   = panel.querySelector('#wa-unk-msg');
+      const goBtn      = panel.querySelector('#wa-unk-go');
+      const closeBtn   = panel.querySelector('#wa-unk-close-btn');
+      const flagSpan   = panel.querySelector('#wa-unk-flag');
 
-    phoneInput.focus();
+      ccInput.addEventListener('change', () => {
+        const c = WA_COUNTRY_CODES.find(x => x.code === ccInput.value);
+        if (flagSpan && c) {
+          let img = flagSpan.querySelector('.wa-unk-flag-img');
+          const src = flagSrc(c.iso);
+          if (img) img.src = src;
+          else flagSpan.innerHTML = `<img src="${src}" alt="" class="wa-unk-flag-img">`;
+        }
+      });
 
-    // Only allow digits in phone
+      phoneInput.focus();
+
     phoneInput.addEventListener('input', () => {
-      phoneInput.value = phoneInput.value.replace(/[^\d\s\-]/g, '');
+      phoneInput.value = phoneInput.value.replace(/\D/g, '').slice(0, 10);
     });
 
     closeBtn.addEventListener('click', () => panel.remove());
@@ -2115,30 +2345,48 @@ function openUnknownChatPanel() {
           unkRecentNums.splice(idx, 1);
           chrome.storage.local.set({ unkRecentNums });
           panel.remove();
-          openUnknownChatPanel(); // re-render
+          openUnknownChatPanel();
         });
       });
+    });
     });
   });
 }
 
 function _openUnknownChat(ccInput, phoneInput, msgInput, panel) {
-  const cc    = ccInput.value.replace(/[^\d+]/g, '');
-  const phone = phoneInput.value.replace(/\D/g, '');
-  if (!phone || phone.length < 4) {
+  const cc    = (ccInput.value || '').replace(/[^\d+]/g, '').replace(/^\+/, '');
+  const phone = (phoneInput.value || '').replace(/\D/g, '');
+  const full  = cc + phone;
+  const digits = full.replace(/\D/g, '');
+  if (digits.length < 10) {
     phoneInput.style.borderColor = '#f15c6d';
     phoneInput.focus();
-    setTimeout(() => phoneInput.style.borderColor = '', 1500);
+    phoneInput.title = 'Include country code (min 10 digits)';
+    setTimeout(() => { phoneInput.style.borderColor = ''; phoneInput.title = ''; }, 2000);
     return;
   }
-  const full = cc.replace('+', '') + phone;
+  if (digits.length > 15) {
+    phoneInput.style.borderColor = '#f15c6d';
+    phoneInput.focus();
+    phoneInput.title = 'Max 15 digits';
+    setTimeout(() => { phoneInput.style.borderColor = ''; phoneInput.title = ''; }, 2000);
+    return;
+  }
+  if (digits.startsWith('0')) {
+    phoneInput.style.borderColor = '#f15c6d';
+    phoneInput.focus();
+    phoneInput.title = 'Use country code (e.g. 91), not leading 0';
+    setTimeout(() => { phoneInput.style.borderColor = ''; phoneInput.title = ''; }, 2000);
+    return;
+  }
   const msg  = msgInput.value.trim();
 
-  // Save to recent (max 10)
+  const countryInfo = WA_COUNTRY_CODES.find(c => c.code === cc) || {};
+  const ccDisplay = countryInfo.dial || ('+' + cc);
+  const isoDisplay = countryInfo.iso || '';
   chrome.storage.local.get('unkRecentNums', ({ unkRecentNums = [] }) => {
-    // Remove duplicate if exists
     unkRecentNums = unkRecentNums.filter(r => r.full !== full);
-    unkRecentNums.unshift({ cc: ccInput.value, phone: phoneInput.value, full });
+    unkRecentNums.unshift({ cc: ccDisplay, phone: phoneInput.value, full, iso: isoDisplay });
     if (unkRecentNums.length > 10) unkRecentNums = unkRecentNums.slice(0, 10);
     chrome.storage.local.set({ unkRecentNums });
   });
@@ -2257,8 +2505,10 @@ function ensureLabelFilterBar() {
     bar.id = 'wa-label-bar';
     bar.innerHTML = `
       <button class="wa-label-chip active" data-filter="all">All</button>
-      <button class="wa-label-chip" data-filter="unread">🔴 Unread</button>
-      <button class="wa-label-chip" data-filter="waiting">⏳ Waiting</button>
+      <button class="wa-label-chip" data-filter="unread">Unread</button>
+      <button class="wa-label-chip" data-filter="one-to-one">One to One</button>
+      <button class="wa-label-chip" data-filter="groups">Groups</button>
+      <button class="wa-label-chip" data-filter="waiting">⏳ Awaiting Reply</button>
       <button class="wa-label-chip" data-filter="mentions">@ Mentions</button>
     `;
     document.body.appendChild(bar);
@@ -2268,14 +2518,19 @@ function ensureLabelFilterBar() {
         currentLabelFilter = chip.dataset.filter;
         bar.querySelectorAll('.wa-label-chip').forEach(c => c.classList.remove('active'));
         chip.classList.add('active');
-        applyLabelFilter(currentLabelFilter);
-        // Start observer to re-apply as WhatsApp re-renders the virtual list
+        function runFilter() {
+          applyLabelFilter(currentLabelFilter);
+          if (currentLabelFilter === 'all') {
+            getVisibleChatRows().forEach(r => { r.style.removeProperty('display'); });
+          }
+        }
+        runFilter();
+        setTimeout(runFilter, 150);
+        setTimeout(runFilter, 500);
         if (currentLabelFilter !== 'all') {
           startLabelObserver();
         } else {
           stopLabelObserver();
-          // Reset all rows
-          getVisibleChatRows().forEach(r => r.style.removeProperty('display'));
         }
       });
     });
@@ -2293,52 +2548,73 @@ function positionLabelBar() {
   bar.style.width = r.width + 'px';
 }
 
-// Selectors that find individual chat row containers in the sidebar
-const CHAT_ROW_SEL = [
-  '[data-testid="cell-frame-container"]',
-  '#pane-side [role="listitem"]',
-  '#pane-side [tabindex="-1"]',
-].join(', ');
-
+// Chat list: find row = parent of cell-frame-container (works across WA versions)
 function getVisibleChatRows() {
   const pane = document.querySelector('#pane-side');
   if (!pane) return [];
-  // Try specific testid first, then role, then any focusable descendant
-  let rows = Array.from(pane.querySelectorAll('[data-testid="cell-frame-container"]'));
-  if (!rows.length) rows = Array.from(pane.querySelectorAll('[role="listitem"]'));
-  if (!rows.length) rows = Array.from(pane.querySelectorAll('[tabindex="-1"]')).filter(el =>
-    el.offsetHeight > 30 && el.children.length > 0
-  );
-  return rows;
+  const cells = pane.querySelectorAll('[data-testid="cell-frame-container"]');
+  if (!cells.length) return [];
+  const seen = new Set();
+  const rows = [];
+  cells.forEach(cell => {
+    let row = cell.parentElement;
+    if (!row || row === pane) row = cell;
+    while (row && row.parentElement && row.parentElement !== pane && row.offsetHeight < 50) {
+      row = row.parentElement;
+    }
+    if (row && !seen.has(row)) {
+      seen.add(row);
+      rows.push(row);
+    }
+  });
+  return rows.filter(el => el && el.offsetHeight > 0);
 }
 
 function rowMatchesFilter(row, filter) {
   if (filter === 'all') return true;
+  const text = (row.textContent || '').trim();
+
   if (filter === 'unread') {
     return !!(
       row.querySelector('[data-testid="icon-unread-count"]') ||
+      row.querySelector('[data-testid="icon-unread"]') ||
       row.querySelector('[aria-label*="unread"]') ||
+      row.querySelector('[aria-label*="Unread"]') ||
       row.querySelector('.unread-count') ||
-      row.querySelector('span[data-icon="unread-count"]')
+      row.querySelector('[data-icon="unread-count"]') ||
+      row.querySelector('[data-icon="unread"]') ||
+      row.querySelector('span[class*="unread"]') ||
+      row.querySelector('[class*="unread"]')
     );
   }
+  if (filter === 'one-to-one') return !isRowGroup(row);
+  if (filter === 'groups') return isRowGroup(row);
+
   if (filter === 'waiting') {
-    const hasSent   = !!(
+    const waitingText = /Waiting for this message/i.test(text);
+    const hasSent = !!(
       row.querySelector('[data-icon="msg-dblcheck"]') ||
       row.querySelector('[data-icon="msg-check"]') ||
       row.querySelector('[data-icon="msg-time"]') ||
       row.querySelector('[data-testid="msg-dblcheck"]') ||
-      row.querySelector('[data-testid="msg-check"]')
+      row.querySelector('[data-testid="msg-check"]') ||
+      waitingText
     );
-    const hasUnread = !!row.querySelector('[data-testid="icon-unread-count"]');
+    const hasUnread = !!(
+      row.querySelector('[data-testid="icon-unread-count"]') ||
+      row.querySelector('[data-testid="icon-unread"]')
+    );
     return hasSent && !hasUnread;
   }
+
   if (filter === 'mentions') {
-    // Look for WhatsApp's @ mention badge or @ in preview text
     return !!(
       row.querySelector('[data-icon="at-mentioned"]') ||
       row.querySelector('[data-testid="at-mentioned"]') ||
-      (row.textContent || '').match(/@\w/)
+      row.querySelector('[aria-label*="mention"]') ||
+      row.querySelector('[aria-label*="Mention"]') ||
+      /@\d{10,}/.test(text) ||
+      /@[\w\u00a0-\uffff]+/.test(text)
     );
   }
   return true;
@@ -2390,6 +2666,35 @@ function getChatName(row) {
     row.querySelector('[dir="auto"][title]') ||
     row.querySelector('span[title]');
   return el ? (el.title || el.textContent || '').trim() : '';
+}
+
+function getRowDataId(row) {
+  if (row.dataset?.id) return row.dataset.id;
+  const inRow = row.querySelector && row.querySelector('[data-id]');
+  if (inRow && inRow.dataset?.id) return inRow.dataset.id;
+  const withId = row.closest && row.closest('[data-id]');
+  if (withId && withId.dataset.id) return withId.dataset.id;
+  let el = row;
+  for (let i = 0; i < 20; i++) {
+    if (!el) break;
+    if (el.dataset?.id) return el.dataset.id;
+    el = el.parentElement;
+  }
+  return '';
+}
+
+function isRowGroup(row) {
+  const id = getRowDataId(row);
+  if (id.endsWith('@g.us')) return true;
+  // Fallback: WA Web often uses group avatar/icon in the row
+  if (row.querySelector && (
+    row.querySelector('[data-icon*="group"]') ||
+    row.querySelector('[data-icon="default-group"]') ||
+    row.querySelector('[data-icon="group"]') ||
+    row.querySelector('[aria-label*="roup"]') ||
+    row.querySelector('[title*="roup"]')
+  )) return true;
+  return false;
 }
 
 // ─── Virtual Pin (up to 8 pinned chats in WA Web list) ───────────────────────
@@ -2658,7 +2963,6 @@ const SVG_REPLY_ARROW = `<svg width="13" height="13" viewBox="0 0 13 13" fill="n
 
 // Find the actual bubble element (narrower than the full-width msg container)
 function getBubbleEl(msgContainer) {
-  // Try WA-specific bubble class names first
   const waSelectors = [
     '.tail-container',
     '[class*="tail-container"]',
@@ -2672,18 +2976,25 @@ function getBubbleEl(msgContainer) {
       if (rect.width > 40) return el;
     }
   }
-  // Fall back: walk up from text element to find narrower ancestor
   const text = msgContainer.querySelector('.selectable-text, .copyable-text');
-  if (!text) return null;
-  const cW = msgContainer.getBoundingClientRect().width;
-  if (!cW) return null;
-  let node = text.parentElement;
-  while (node && node !== msgContainer) {
-    const w = node.getBoundingClientRect().width;
-    if (w > 60 && w < cW * 0.85) return node;
-    node = node.parentElement;
+  if (text) {
+    const cW = msgContainer.getBoundingClientRect().width;
+    if (cW) {
+      let node = text.parentElement;
+      while (node && node !== msgContainer) {
+        const w = node.getBoundingClientRect().width;
+        if (w > 60 && w < cW * 0.85) return node;
+        node = node.parentElement;
+      }
+    }
   }
-  return null;
+  // Messages with only link preview / quoted preview: use preview block or container
+  const preview = msgContainer.querySelector('[data-testid="link-preview"],[data-testid="quoted-msg"],[data-testid="quoted-message"],[class*="link-preview"],[class*="quoted"]');
+  if (preview) {
+    const rect = preview.getBoundingClientRect();
+    if (rect.width > 40) return preview;
+  }
+  return msgContainer;
 }
 
 function ensureHoverReplyBtn() {
@@ -2716,8 +3027,11 @@ function showReplyBtnFor(msgContainer) {
   if (!btn) return;
 
   const bubble = getBubbleEl(msgContainer);
-  const r = (bubble || msgContainer).getBoundingClientRect();
-  if (r.width < 10) return; // off-screen / hidden
+  let r = (bubble || msgContainer).getBoundingClientRect();
+  if (r.width < 10) {
+    r = msgContainer.getBoundingClientRect();
+    if (r.width < 10) return;
+  }
 
   const isOut = msgContainer.classList.contains('message-out') ||
                 !!msgContainer.closest('.message-out') ||
@@ -2751,23 +3065,54 @@ function showReplyBtnFor(msgContainer) {
   btn.classList.add('whr-visible');
 }
 
+const HOVER_MSG_SEL = '[data-testid="msg-container"], .message-in, .message-out, [class*="message-in"], [class*="message-out"], [class*="MessageIn"], [class*="MessageOut"]';
+
+function getOutermostMessageContainer(el) {
+  if (!el || !el.matches(HOVER_MSG_SEL)) return el;
+  let root = el;
+  let parent = el.parentElement;
+  for (let i = 0; i < 15 && parent; i++) {
+    if (parent.id === 'main' || parent.getAttribute('role') === 'application') break;
+    if (parent.matches(HOVER_MSG_SEL)) root = parent;
+    parent = parent.parentElement;
+  }
+  return root;
+}
+
 function injectHoverReply() {
   ensureHoverReplyBtn();
-  // Bind to all message containers — text, image, video, audio, sticker, etc.
-  document.querySelectorAll('[data-testid="msg-container"], .message-in, .message-out').forEach(c => {
-    if (c.dataset.waHoverReplyBound) return;
-    c.dataset.waHoverReplyBound = '1';
+  const main = document.getElementById('main');
+  if (!main) return;
+  if (main.dataset.waHoverReplyDelegated) return;
+  main.dataset.waHoverReplyDelegated = '1';
 
-    c.addEventListener('mouseenter', () => {
-      clearTimeout(hideReplyTimer);
-      hoverReplyTarget = c;
-      showReplyBtnFor(c);
-    });
-    c.addEventListener('mouseleave', e => {
-      if (e.relatedTarget?.id === 'wa-hover-reply') return;
-      scheduleHideReply();
-    });
+  // Delegated: mouseover/mouseout so hover on preview/link card/quoted block still finds msg container
+  main.addEventListener('mouseover', (e) => {
+    const c = e.target.closest(HOVER_MSG_SEL);
+    if (!c) return;
+    if (c === hoverReplyTarget) return;
+    clearTimeout(hideReplyTimer);
+    hoverReplyTarget = c;
+    showReplyBtnFor(c);
   });
+
+  main.addEventListener('mouseout', (e) => {
+    if (e.relatedTarget?.id === 'wa-hover-reply') return;
+    if (e.relatedTarget?.closest?.(HOVER_MSG_SEL)) return;
+    scheduleHideReply();
+  });
+
+  // Double-click message = same as reply button: open in chat bar as reply preview
+  // Use capture so we run before WhatsApp and reliably get the message
+  main.addEventListener('dblclick', (e) => {
+    const c = e.target.closest(HOVER_MSG_SEL);
+    if (!c) return;
+    e.preventDefault();
+    e.stopPropagation();
+    document.getElementById('wa-hover-reply')?.classList.remove('whr-visible');
+    const msg = getOutermostMessageContainer(c);
+    triggerNativeReply(msg);
+  }, true);
 }
 
 // ─── Chat Row Pin Button ──────────────────────────────────────────────────────
@@ -2876,54 +3221,24 @@ function injectChatPinButtons() {
   });
 }
 
+// Focus compose input so user can type after reply preview opens (like mobile swipe-to-reply)
+function focusComposeAfterReply() {
+  const input =
+    document.querySelector('#main footer [data-lexical-editor="true"]') ||
+    document.querySelector('#main footer div[contenteditable="true"]') ||
+    document.querySelector('div[contenteditable="true"][data-tab="10"]') ||
+    document.querySelector('[data-testid="conversation-compose-box-input"]');
+  if (input) {
+    input.focus();
+    input.click();
+  }
+}
+
 async function triggerNativeReply(msgContainer) {
   document.getElementById('wa-hover-reply')?.classList.remove('whr-visible');
 
-  // ── Case 1: Message IS a reply — click quoted preview to scroll to original ──
-  // Walk UP past any nested msg-containers (quoted preview may share same selector)
-  // to get the OUTERMOST message container
-  const MSG_SEL = '[data-testid="msg-container"], .message-in, .message-out';
-  let fullMsgRoot = msgContainer;
-  {
-    let el = msgContainer.parentElement;
-    let limit = 12;
-    while (el && limit-- > 0) {
-      if (el.matches(MSG_SEL)) fullMsgRoot = el;  // keep climbing to find outermost
-      if (el.id === 'main' || el.getAttribute('role') === 'application') break;
-      el = el.parentElement;
-    }
-  }
-
-  // Strategy A: classic testid selectors (older WA versions)
-  const QUOTED_SELS = '[data-testid="quoted-msg"],[data-testid="quoted-message"],[data-testid="quoted-mention"],[data-testid="quoted-preview"],[aria-label="Quoted message"],[data-testid*="quot"],[class*="quoted"],[class*="Quoted"]';
-  let quotedPreview = fullMsgRoot.querySelector(QUOTED_SELS);
-
-  // Strategy B: WA Web 2025 — quoted preview is a plain <button> wrapping
-  // [data-testid="selectable-text"] + sender-name [aria-label="Name:"]
-  if (!quotedPreview) {
-    const stInBtn = fullMsgRoot.querySelector('button [data-testid="selectable-text"]');
-    if (stInBtn) quotedPreview = stInBtn.closest('button');
-  }
-
-  // Strategy C: fullMsgRoot itself IS the quoted preview
-  // (sender aria-label ends with ":" AND has selectable-text)
-  if (!quotedPreview) {
-    const hasSenderColon = [...fullMsgRoot.querySelectorAll('[aria-label]')]
-      .some(el => (el.getAttribute('aria-label') || '').endsWith(':'));
-    if (hasSenderColon && fullMsgRoot.querySelector('[data-testid="selectable-text"]')) {
-      quotedPreview = fullMsgRoot.closest('button') || fullMsgRoot;
-    }
-  }
-
-  if (quotedPreview) {
-    quotedPreview.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    await sleep(150);
-    quotedPreview.click();
-    console.log('[WA-REPLY] clicked quoted preview');
-    return;
-  }
-
-  // ── Case 2: Regular message — try to initiate a new reply ──
+  // Always open this message in the chat bar as reply preview (like mobile swipe-to-reply).
+  // Scroll message into view and trigger native Reply so it appears above the compose input.
   msgContainer.scrollIntoView({ block: 'center', behavior: 'instant' });
   await sleep(200);
 
@@ -3018,11 +3333,32 @@ async function triggerNativeReply(msgContainer) {
     document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   };
 
+  /* ── Method 3 first: Right-click context menu → Reply (doesn't need hover) ── */
+  const ctxTargets = [
+    bubble.querySelector('.copyable-text, .selectable-text, [dir="ltr"], [dir="auto"], [data-testid="selectable-text"]') || bubble,
+    bubble,
+    msgContainer,
+  ].filter((el, i, arr) => el && arr.indexOf(el) === i);
+  for (const ctxTarget of ctxTargets) {
+    const tRect = ctxTarget.getBoundingClientRect();
+    if (tRect.width < 5 || tRect.height < 5) continue;
+    const tc = { bubbles: true, cancelable: true, clientX: Math.round(tRect.left + tRect.width / 2), clientY: Math.round(tRect.top + tRect.height / 2) };
+    ctxTarget.dispatchEvent(new MouseEvent('contextmenu', tc));
+    const menuReply = await findMenuItem(4);
+    if (menuReply) {
+      menuReply.click();
+      await sleep(150);
+      focusComposeAfterReply();
+      return;
+    }
+    dismissMenu();
+    await sleep(200);
+  }
+
   /* ── simulate real hover on the msg row ──────────────── */
   const hoverTargets = [msgContainer, bubble];
   const listRow = msgContainer.closest('[data-testid^="list-item"], [role="row"], [data-id]');
   if (listRow) hoverTargets.unshift(listRow);
-
   for (const t of hoverTargets) {
     t.dispatchEvent(new PointerEvent('pointerover',  { ...coords, pointerId: 1, bubbles: true }));
     t.dispatchEvent(new PointerEvent('pointerenter', { ...coords, pointerId: 1, bubbles: false }));
@@ -3043,6 +3379,8 @@ async function triggerNativeReply(msgContainer) {
         replyBtn.click();
         await sleep(80);
         restore();
+        await sleep(150);
+        focusComposeAfterReply();
         console.log('[WA-REPLY] method 1 — direct reply button');
         return;
       }
@@ -3057,6 +3395,8 @@ async function triggerNativeReply(msgContainer) {
           btn.click();
           await sleep(80);
           r2(); restore();
+          await sleep(150);
+          focusComposeAfterReply();
           console.log('[WA-REPLY] method 1 — revealed action bar reply');
           return;
         }
@@ -3086,6 +3426,8 @@ async function triggerNativeReply(msgContainer) {
       if (dropReply) {
         dropReply.click();
         restoreMore();
+        await sleep(150);
+        focusComposeAfterReply();
         console.log('[WA-REPLY] method 2 — chevron dropdown → Reply');
         return;
       }
@@ -3095,35 +3437,23 @@ async function triggerNativeReply(msgContainer) {
     }
   }
 
-  /* ── Method 3: Right-click context menu → Reply ────── */
-  // Try context menu on text element → bubble → container (WA handler may be on any of these)
-  const ctxTargets = [
-    bubble.querySelector('.copyable-text, .selectable-text, [dir="ltr"], [dir="auto"]') || bubble,
-    bubble,
-    msgContainer,
-  ].filter((el, i, arr) => el && arr.indexOf(el) === i); // deduplicate
+  /* ── Method 4: Double-click / double-click simulation ── */
+  const checkQuotedInCompose = () =>
+    document.querySelector('#main footer [data-testid="quoted-message"], #main footer [data-testid="compose-box-quote"], #main [data-testid="conversation-compose-box"] [data-testid*="quot"], [class*="quoted-message"]');
 
-  for (const ctxTarget of ctxTargets) {
-    const tRect = ctxTarget.getBoundingClientRect();
-    const tc = { bubbles: true, cancelable: true, clientX: Math.round(tRect.left + tRect.width / 2), clientY: Math.round(tRect.top + tRect.height / 2) };
-    ctxTarget.dispatchEvent(new MouseEvent('contextmenu', tc));
-    const menuReply = await findMenuItem(4);
-    if (menuReply) {
-      menuReply.click();
-      console.log('[WA-REPLY] method 3 — context menu → Reply');
-      return;
-    }
-    dismissMenu();
-    await sleep(200);
+  bubble.dispatchEvent(new MouseEvent('dblclick', { ...coords, detail: 2 }));
+  await sleep(350);
+  if (checkQuotedInCompose()) {
+    focusComposeAfterReply();
+    return;
   }
-
-  /* ── Method 4: Double-click the message (WA shortcut) ── */
-  bubble.dispatchEvent(new MouseEvent('dblclick', coords));
-  await sleep(400);
-  // If compose box now has quoted-message, it worked
-  const quoted = document.querySelector('[data-testid="quoted-message"], [data-testid="compose-box-quote"]');
-  if (quoted) {
-    console.log('[WA-REPLY] method 4 — double-click');
+  // Some WA versions react to two quick clicks instead of dblclick
+  bubble.dispatchEvent(new MouseEvent('click', coords));
+  await sleep(80);
+  bubble.dispatchEvent(new MouseEvent('click', coords));
+  await sleep(350);
+  if (checkQuotedInCompose()) {
+    focusComposeAfterReply();
     return;
   }
 
@@ -3193,7 +3523,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === 'SEND_WITH_IMAGE') {
-    sendImageWithCaption(msg.imageData, msg.imageMime, msg.imageName, msg.caption).then(sendResponse).catch(e => sendResponse({ success: false, error: e.message }));
+    (async () => {
+      let imageData = msg.imageData, imageMime = msg.imageMime, imageName = msg.imageName, caption = msg.caption;
+      if (msg.imageKey) {
+        const stored = await chrome.storage.session.get(msg.imageKey);
+        const p = stored[msg.imageKey];
+        if (p) { imageData = p.imageData; imageMime = p.imageMime; imageName = p.imageName; caption = p.caption ?? caption; }
+      }
+      if (!imageData) return sendResponse({ success: false, error: 'No image data (check session storage)' });
+      sendResponse(await sendImageWithCaption(imageData, imageMime, imageName, caption));
+    })().catch(e => sendResponse({ success: false, error: e.message }));
     return true;
   }
 
@@ -3472,13 +3811,11 @@ function _genTaskId() {
 }
 
 function _setTaskAlarm(task) {
-  if (!task.time || task.done) { console.log('[WA-TASK] alarm skipped — no time or done', task.id); return; }
+  if (!task.time || task.done) return;
   const dateStr = _taskDateStr(task);
   const when = new Date(dateStr + 'T' + task.time + ':00').getTime();
-  console.log('[WA-TASK] alarm when:', new Date(when).toLocaleString(), '| now:', new Date().toLocaleString(), '| future?', when > Date.now());
-  if (when <= Date.now()) { console.log('[WA-TASK] alarm skipped — time already passed'); return; }
-  chrome.runtime.sendMessage({ type: 'SET_TASK_ALARM', data: { taskId: task.id, title: task.title, when } },
-    r => { console.log('[WA-TASK] alarm set response:', r, chrome.runtime.lastError?.message); });
+  if (when <= Date.now()) return;
+  chrome.runtime.sendMessage({ type: 'SET_TASK_ALARM', data: { taskId: task.id, title: task.title, when } }, () => {});
 }
 
 function _cancelTaskAlarm(taskId) {
@@ -3897,7 +4234,7 @@ function initTaskPanel() {
   if (_isChatOpen()) return;
 
   const section = _findIntroSection();
-  if (!section) { console.log('[WA-TASK] intro section not found'); return; }
+  if (!section) return;
 
   injectTaskStyles();
 
@@ -3950,7 +4287,6 @@ function initTaskPanel() {
     });
   });
 
-  console.log('[WA-TASK] panel injected — section-based UI');
   renderTaskPanel();
 }
 
@@ -3970,7 +4306,6 @@ function _syncTaskPanel() {
     _removeTaskPanel();
   } else if (!document.getElementById(TASK_PANEL_ID)) {
     const sec = _findIntroSection();
-    console.log('[WA-TASK] _syncTaskPanel — chatOpen:', chatOpen, 'section:', !!sec, 'panel:', !!document.getElementById(TASK_PANEL_ID));
     if (sec) initTaskPanel();
   }
 }
@@ -3989,22 +4324,15 @@ const _pinBarObserver = new MutationObserver(() => {
   const chatOpenNow = _isChatOpen();
   if (_lastChatOpenState !== chatOpenNow) {
     _lastChatOpenState = chatOpenNow;
-    if (chatOpenNow) {
-      _removeTaskPanel();
-      console.log('[WA-TASK] chat opened, panel removed');
-    }
+    if (chatOpenNow) _removeTaskPanel();
   }
   // Continuously retry injection: no chat + intro section present + panel missing
   if (!chatOpenNow && !document.getElementById(TASK_PANEL_ID)) {
     const sec = _findIntroSection();
-    if (sec) {
-      console.log('[WA-TASK] injecting task panel (intro section found)');
-      initTaskPanel();
-    }
+    if (sec) initTaskPanel();
   }
 });
 _pinBarObserver.observe(document.body, { childList: true, subtree: true });
-console.log('[WA-TASK] content script ready — observer active');
 
 // Live-sync: update pins, header button, and task list when storage changes
 chrome.storage.onChanged.addListener(changes => {

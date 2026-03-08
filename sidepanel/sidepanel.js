@@ -8,7 +8,7 @@ let isRunning   = false;
 let privacyOn   = false;
 let pinnedChats = [];   // max 6 virtual pinned chats
 const PIN_MAX   = 6;
-let settings    = { apiKey: '', openaiApiKey: '', aiEnabled: false, minDelay: 15, maxDelay: 45, dailyLimit: 100, stealthMode: false, autoPrivacy: false };
+let settings    = { apiKey: '', geminiApiKey: '', openaiApiKey: '', aiProvider: 'gemini', aiEnabled: false, minDelay: 15, maxDelay: 45, dailyLimit: 100, stealthMode: false, autoPrivacy: false };
 
 // ─── Suppress "message channel closed" runtime.lastError warnings ─────────────
 // MV3 service workers can terminate before responding; this wrapper ensures
@@ -20,6 +20,54 @@ let settings    = { apiKey: '', openaiApiKey: '', aiEnabled: false, minDelay: 15
       ? function(...a) { cb(...a); void chrome.runtime.lastError; }
       : function()     { void chrome.runtime.lastError; });
   };
+}
+
+// ─── Country codes (dial + flag via iso; img src from GET_FLAG_URLS data URLs) ─
+const COUNTRY_CODES = [
+  { code: '91', dial: '+91', iso: 'in' }, { code: '1', dial: '+1', iso: 'us' },
+  { code: '44', dial: '+44', iso: 'gb' }, { code: '81', dial: '+81', iso: 'jp' },
+  { code: '86', dial: '+86', iso: 'cn' }, { code: '49', dial: '+49', iso: 'de' },
+  { code: '33', dial: '+33', iso: 'fr' }, { code: '61', dial: '+61', iso: 'au' },
+  { code: '55', dial: '+55', iso: 'br' }, { code: '52', dial: '+52', iso: 'mx' },
+  { code: '39', dial: '+39', iso: 'it' }, { code: '34', dial: '+34', iso: 'es' },
+  { code: '7', dial: '+7', iso: 'ru' }, { code: '82', dial: '+82', iso: 'kr' },
+  { code: '31', dial: '+31', iso: 'nl' }, { code: '971', dial: '+971', iso: 'ae' },
+  { code: '966', dial: '+966', iso: 'sa' }, { code: '65', dial: '+65', iso: 'sg' },
+  { code: '60', dial: '+60', iso: 'my' }, { code: '62', dial: '+62', iso: 'id' },
+  { code: '63', dial: '+63', iso: 'ph' }, { code: '84', dial: '+84', iso: 'vn' },
+  { code: '90', dial: '+90', iso: 'tr' }, { code: '92', dial: '+92', iso: 'pk' },
+  { code: '98', dial: '+98', iso: 'ir' }, { code: '20', dial: '+20', iso: 'eg' },
+  { code: '234', dial: '+234', iso: 'ng' }, { code: '27', dial: '+27', iso: 'za' },
+  { code: '254', dial: '+254', iso: 'ke' }, { code: '212', dial: '+212', iso: 'ma' },
+  { code: '213', dial: '+213', iso: 'dz' }, { code: '216', dial: '+216', iso: 'tn' },
+  { code: '249', dial: '+249', iso: 'sd' }, { code: '233', dial: '+233', iso: 'gh' },
+  { code: '255', dial: '+255', iso: 'tz' }, { code: '256', dial: '+256', iso: 'ug' },
+  { code: '250', dial: '+250', iso: 'rw' }, { code: '237', dial: '+237', iso: 'cm' },
+  { code: '351', dial: '+351', iso: 'pt' }, { code: '48', dial: '+48', iso: 'pl' },
+  { code: '46', dial: '+46', iso: 'se' }, { code: '47', dial: '+47', iso: 'no' },
+  { code: '45', dial: '+45', iso: 'dk' }, { code: '358', dial: '+358', iso: 'fi' },
+  { code: '353', dial: '+353', iso: 'ie' }, { code: '64', dial: '+64', iso: 'nz' },
+  { code: '880', dial: '+880', iso: 'bd' }, { code: '94', dial: '+94', iso: 'lk' },
+  { code: '977', dial: '+977', iso: 'np' },
+];
+
+function getFullPhoneFromCountryAndNumber(countryCode, numberOnly) {
+  const cc = (countryCode || '').replace(/\D/g, '');
+  const num = (numberOnly || '').replace(/\D/g, '');
+  return cc + num;
+}
+
+// ─── Phone validation (country code required, E.164: 10–15 digits) ────────────
+const PHONE_MIN = 10;
+const PHONE_MAX = 15;
+
+function validatePhone(phone) {
+  const digits = (phone || '').replace(/[^0-9]/g, '');
+  if (!digits.length) return { valid: false, error: 'Enter a phone number with country code' };
+  if (digits.length < PHONE_MIN) return { valid: false, error: `Include country code (min ${PHONE_MIN} digits, e.g. 91 for India)` };
+  if (digits.length > PHONE_MAX) return { valid: false, error: `Number too long (max ${PHONE_MAX} digits)` };
+  if (digits.startsWith('0')) return { valid: false, error: 'Use country code instead of leading 0 (e.g. 91… not 0…)' };
+  return { valid: true };
 }
 
 // ─── Privacy Mode ─────────────────────────────────────────────────────────────
@@ -65,6 +113,69 @@ function setPrivacy(on) {
   });
 }
 
+function flagSrc(flagUrls, iso) {
+  return (flagUrls && flagUrls[iso]) || `https://flagcdn.com/w40/${iso}.png`;
+}
+
+// ─── Compact country picker (flag + dial, scrollable list) ────────────────────
+function initCountryPicker(wrapId, hiddenId, defaultCode = '91', flagUrls = {}) {
+  const wrap = document.getElementById(wrapId);
+  let hidden = document.getElementById(hiddenId);
+  if (!wrap) return;
+  if (!hidden) {
+    hidden = document.createElement('input');
+    hidden.type = 'hidden';
+    hidden.id = hiddenId;
+    hidden.value = defaultCode;
+    wrap.appendChild(hidden);
+  } else {
+    hidden.value = hidden.value || defaultCode;
+  }
+  const current = COUNTRY_CODES.find(c => c.code === hidden.value) || COUNTRY_CODES[0];
+  wrap.innerHTML = '';
+  wrap.appendChild(hidden);
+
+  const box = document.createElement('div');
+  box.className = 'country-picker-box';
+  box.setAttribute('tabindex', '0');
+  const valueSpan = document.createElement('span');
+  valueSpan.className = 'country-picker-value';
+  valueSpan.innerHTML = `<img src="${flagSrc(flagUrls, current.iso)}" alt="" class="country-flag-img"> ${current.dial}`;
+  const arrow = document.createElement('span');
+  arrow.className = 'country-picker-arrow';
+  arrow.textContent = '▾';
+  box.appendChild(valueSpan);
+  box.appendChild(arrow);
+
+  const list = document.createElement('div');
+  list.className = 'country-picker-list';
+  COUNTRY_CODES.forEach(c => {
+    const opt = document.createElement('div');
+    opt.className = 'country-picker-option';
+    opt.dataset.code = c.code;
+    opt.innerHTML = `<img src="${flagSrc(flagUrls, c.iso)}" alt="" class="country-flag-img"> ${c.dial}`;
+    opt.addEventListener('click', () => {
+      hidden.value = c.code;
+      valueSpan.innerHTML = `<img src="${flagSrc(flagUrls, c.iso)}" alt="" class="country-flag-img"> ${c.dial}`;
+      list.classList.remove('open');
+      box.focus();
+    });
+    list.appendChild(opt);
+  });
+
+  box.addEventListener('click', (e) => {
+    e.stopPropagation();
+    list.classList.toggle('open');
+  });
+  wrap.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') list.classList.remove('open');
+  });
+  document.addEventListener('click', () => list.classList.remove('open'));
+
+  wrap.appendChild(box);
+  wrap.appendChild(list);
+}
+
 // ─── Init ─────────────────────────────────────────────────────────────────────
 chrome.storage.local.get(['contacts','settings','results','replies','pinnedChats'], (d) => {
   if (d.contacts)    { contacts    = d.contacts.map(c => crmDefaults(c)); renderContacts(); }
@@ -72,6 +183,12 @@ chrome.storage.local.get(['contacts','settings','results','replies','pinnedChats
   if (d.results)     { results     = d.results;  renderLastResults(); }
   if (d.replies)     { replies     = d.replies;  renderReplies(); }
   if (d.pinnedChats) { pinnedChats = d.pinnedChats; renderPinnedChats(); }
+  chrome.runtime.sendMessage({ type: 'GET_FLAG_URLS' }, (flagUrls) => {
+    const urls = flagUrls || {};
+    initCountryPicker('manualCountry-wrap', 'manualCountry', '91', urls);
+    initCountryPicker('pin-country-wrap', 'pin-country', '91', urls);
+    initCountryPicker('qs-country-wrap', 'qs-country', '91', urls);
+  });
 });
 
 chrome.storage.local.get('campaignProgress', (d) => {
@@ -90,7 +207,139 @@ document.querySelectorAll('.tab').forEach(t => {
     if (t.dataset.tab === 'analytics') loadAnalytics();
     if (t.dataset.tab === 'pipeline')  renderPipeline();
     if (t.dataset.tab === 'dashboard') renderDashboard();
+    if (t.dataset.tab === 'tasks') { ensureTaskNotificationPermission(); renderTasks(); }
+    if (t.dataset.tab === 'auto') {
+      chrome.storage.local.get('settings', (d) => { if (d.settings) settings = { ...settings, ...d.settings }; });
+    }
   });
+});
+
+// ─── TASKS TAB (syncs with waTasks, notifications via background alarms) ───────
+let taskSpFilter = 'today';
+
+function taskLocalDateStr(d) {
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function taskGetTodayStr() { return taskLocalDateStr(new Date()); }
+function taskGetTomorrowStr() { const d = new Date(); d.setDate(d.getDate() + 1); return taskLocalDateStr(d); }
+function taskDateStr(t) {
+  if (t.date === 'today') return taskGetTodayStr();
+  if (t.date === 'tomorrow') return taskGetTomorrowStr();
+  return t.date || taskGetTodayStr();
+}
+function taskGenId() { return 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+
+function ensureTaskNotificationPermission() {
+  if (chrome.notifications) chrome.notifications.getPermissionLevel?.(() => {});
+}
+
+function setTaskAlarm(task) {
+  if (!task.time || task.done) return;
+  const when = new Date(taskDateStr(task) + 'T' + task.time + ':00').getTime();
+  if (when <= Date.now()) return;
+  chrome.runtime.sendMessage({ type: 'SET_TASK_ALARM', data: { taskId: task.id, title: task.title, when } }, () => {});
+}
+function cancelTaskAlarm(taskId) {
+  chrome.runtime.sendMessage({ type: 'CANCEL_TASK_ALARM', data: { taskId } }, () => {});
+}
+
+function renderTasks() {
+  const listEl = document.getElementById('task-sp-list');
+  const formEl = document.getElementById('task-sp-form');
+  if (!listEl) return;
+  chrome.storage.local.get('waTasks', ({ waTasks = [] }) => {
+    const today = taskGetTodayStr(), tomorrow = taskGetTomorrowStr();
+    const buckets = { today: [], tomorrow: [], later: [], done: [] };
+    waTasks.forEach(t => {
+      if (t.done) { buckets.done.push(t); return; }
+      const ds = taskDateStr(t);
+      if (ds === today) buckets.today.push(t);
+      else if (ds === tomorrow) buckets.tomorrow.push(t);
+      else buckets.later.push(t);
+    });
+    const sortByTime = (a, b) => ((a.time || '99:99') < (b.time || '99:99') ? -1 : 1);
+    Object.values(buckets).forEach(arr => arr.sort(sortByTime));
+    const tasks = buckets[taskSpFilter] || [];
+    const prioClass = { high: 'task-prio-high', medium: '', low: 'task-prio-low' };
+    if (!tasks.length) {
+      listEl.innerHTML = '<div class="empty-state">No tasks in this list.</div>';
+    } else {
+      listEl.innerHTML = tasks.map(t => `
+        <div class="task-sp-item card p-6 mb-4 row align-center gap-6" data-task-id="${t.id}">
+          <input type="checkbox" class="task-sp-done" ${t.done ? 'checked' : ''} data-id="${t.id}" title="Mark done">
+          <div class="flex-1 min-w-0">
+            <div class="task-sp-title ${t.done ? 'done' : ''}">${esc(t.title)}</div>
+            ${t.description ? `<div class="muted-text text-12">${esc(t.description)}</div>` : ''}
+            <div class="row gap-4 mt-2">
+              ${t.time ? `<span class="muted-text text-11">⏰ ${t.time}</span>` : ''}
+              ${t.priority && t.priority !== 'medium' ? `<span class="text-11 ${prioClass[t.priority]}">${t.priority}</span>` : ''}
+            </div>
+          </div>
+          <button type="button" class="btn btn-outline btn-sm task-sp-del" data-id="${t.id}" title="Delete">✕</button>
+        </div>
+      `).join('');
+    }
+    listEl.querySelectorAll('.task-sp-done').forEach(cb => {
+      cb.addEventListener('change', () => {
+        const id = cb.dataset.id;
+        const ts = [...waTasks];
+        const task = ts.find(x => x.id === id);
+        if (!task) return;
+        task.done = !!cb.checked;
+        if (task.done) cancelTaskAlarm(id); else setTaskAlarm(task);
+        chrome.storage.local.set({ waTasks: ts }, () => renderTasks());
+      });
+    });
+    listEl.querySelectorAll('.task-sp-del').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.id;
+        cancelTaskAlarm(id);
+        chrome.storage.local.set({ waTasks: waTasks.filter(t => t.id !== id) }, () => renderTasks());
+      });
+    });
+  });
+}
+
+document.querySelectorAll('.task-sp-nav').forEach(btn => {
+  btn.addEventListener('click', () => {
+    taskSpFilter = btn.dataset.taskFilter;
+    document.querySelectorAll('.task-sp-nav').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    renderTasks();
+  });
+});
+document.getElementById('task-sp-addBtn')?.addEventListener('click', () => {
+  const form = document.getElementById('task-sp-form');
+  if (form) { form.style.display = 'block'; form.querySelector('#task-sp-title')?.focus(); }
+});
+document.getElementById('task-sp-cancel')?.addEventListener('click', () => {
+  const form = document.getElementById('task-sp-form');
+  if (form) form.style.display = 'none';
+});
+document.getElementById('task-sp-save')?.addEventListener('click', () => {
+  const title = document.getElementById('task-sp-title')?.value?.trim();
+  if (!title) return;
+  const desc = document.getElementById('task-sp-desc')?.value?.trim() || '';
+  const dateRadio = document.querySelector('input[name="task-sp-date"]:checked');
+  const dateVal = dateRadio?.value === 'custom' ? (document.getElementById('task-sp-date-custom')?.value || taskGetTodayStr()) : (dateRadio?.value || 'today');
+  const time = document.getElementById('task-sp-time')?.value?.trim() || '';
+  const priority = document.getElementById('task-sp-priority')?.value || 'medium';
+  const task = { id: taskGenId(), title, description: desc, date: dateVal, time, priority, done: false, createdAt: Date.now() };
+  chrome.storage.local.get('waTasks', ({ waTasks = [] }) => {
+    waTasks.push(task);
+    chrome.storage.local.set({ waTasks }, () => {
+      setTaskAlarm(task);
+      document.getElementById('task-sp-form').style.display = 'none';
+      document.getElementById('task-sp-title').value = '';
+      document.getElementById('task-sp-desc').value = '';
+      document.getElementById('task-sp-time').value = '';
+      renderTasks();
+    });
+  });
+});
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.waTasks) renderTasks();
 });
 
 // ─── CSV Upload ───────────────────────────────────────────────────────────────
@@ -159,9 +408,12 @@ document.getElementById('addBtn').addEventListener('click', addManual);
 document.getElementById('manualPhone').addEventListener('keydown', e => { if (e.key === 'Enter') addManual(); });
 
 function addManual() {
-  const name  = document.getElementById('manualName').value.trim();
-  const phone = document.getElementById('manualPhone').value.trim().replace(/[^0-9+]/g, '');
-  if (!phone) return showToast('Phone number required (with country code)', 'err');
+  const name   = document.getElementById('manualName').value.trim();
+  const cc     = (document.getElementById('manualCountry')?.value || '91').replace(/\D/g, '');
+  const number = document.getElementById('manualPhone').value.trim().replace(/\D/g, '');
+  const phone  = getFullPhoneFromCountryAndNumber(cc, number);
+  const v = validatePhone(phone);
+  if (!v.valid) return showToast(v.error, 'err');
   contacts.push(crmDefaults({ name: name || phone, phone, status: 'pending' }));
   saveContacts(); renderContacts(); updatePreviewPicker();
   document.getElementById('manualName').value = document.getElementById('manualPhone').value = '';
@@ -320,11 +572,14 @@ function renderPinnedChats() {
 
 // ─── Manual Quick-Pin handler ─────────────────────────────────────────────────
 document.getElementById('pinAddBtn').addEventListener('click', () => {
-  const nameEl  = document.getElementById('pin-name');
-  const phoneEl = document.getElementById('pin-phone');
-  const phone   = phoneEl.value.trim().replace(/[^0-9+]/g, '');
-  const name    = nameEl.value.trim() || phone;
-  if (!phone) return showToast('Enter a phone number to pin', 'err');
+  const nameEl   = document.getElementById('pin-name');
+  const phoneEl  = document.getElementById('pin-phone');
+  const cc       = (document.getElementById('pin-country')?.value || '91').replace(/\D/g, '');
+  const number   = phoneEl.value.trim().replace(/\D/g, '');
+  const phone    = getFullPhoneFromCountryAndNumber(cc, number);
+  const name     = nameEl.value.trim() || phone;
+  const v = validatePhone(phone);
+  if (!v.valid) return showToast(v.error, 'err');
   pinChat({ name, phone });
   nameEl.value = '';
   phoneEl.value = '';
@@ -504,17 +759,32 @@ document.getElementById('imagePickBtn').addEventListener('click', () => {
 document.getElementById('imageFile').addEventListener('change', e => {
   const file = e.target.files[0];
   if (!file) return;
+  const isVideo = (file.type || '').startsWith('video/');
   const reader = new FileReader();
   reader.onload = ev => {
-    campaignImageData = ev.target.result; // data:image/...;base64,...
+    campaignImageData = ev.target.result;
     campaignImageName = file.name;
-    campaignImageMime = file.type;
+    campaignImageMime = file.type || (isVideo ? 'video/mp4' : 'image/jpeg');
     document.getElementById('imageFileName').textContent = file.name;
-    document.getElementById('imagePreviewImg').src = campaignImageData;
-    document.getElementById('imagePreview').style.display = 'block';
+    const preview = document.getElementById('imagePreview');
+    const imgEl = document.getElementById('imagePreviewImg');
+    const videoLabel = document.getElementById('videoPreviewLabel');
+    const videoNameEl = document.getElementById('videoFileName');
+    if (isVideo) {
+      imgEl.style.display = 'none';
+      if (videoLabel && videoNameEl) {
+        videoNameEl.textContent = file.name;
+        videoLabel.style.display = 'block';
+      }
+    } else {
+      imgEl.src = campaignImageData;
+      imgEl.style.display = 'block';
+      if (videoLabel) videoLabel.style.display = 'none';
+    }
+    preview.style.display = 'block';
     document.getElementById('imageClearBtn').style.display = '';
     const hint = document.getElementById('captionHint');
-    if (hint) hint.style.display = 'inline';
+    if (hint) hint.style.display = 'block';
   };
   reader.readAsDataURL(file);
 });
@@ -524,6 +794,10 @@ document.getElementById('imageClearBtn').addEventListener('click', () => {
   document.getElementById('imageFile').value = '';
   document.getElementById('imageFileName').textContent = 'No file chosen';
   document.getElementById('imagePreview').style.display = 'none';
+  document.getElementById('imagePreviewImg').src = '';
+  document.getElementById('imagePreviewImg').style.display = 'none';
+  const v = document.getElementById('videoPreviewLabel');
+  if (v) v.style.display = 'none';
   document.getElementById('imageClearBtn').style.display = 'none';
   const hint = document.getElementById('captionHint');
   if (hint) hint.style.display = 'none';
@@ -539,8 +813,9 @@ document.getElementById('aiEnabled').addEventListener('change', e => {
   settings.aiEnabled = e.target.checked;
   const st = document.getElementById('aiStatus');
   if (e.target.checked) {
-    st.textContent = settings.apiKey ? '✓ AI will personalize each message' : '⚠️ Add API key in Settings tab first';
-    st.style.color = settings.apiKey ? '#25D366' : '#d29922';
+    const hasKey = (settings.aiProvider === 'gemini' ? settings.geminiApiKey : settings.apiKey) || '';
+    st.textContent = hasKey ? '✓ AI will personalize each message' : '⚠️ Add API key in Settings tab first';
+    st.style.color = hasKey ? '#25D366' : '#d29922';
   } else {
     st.textContent = 'Template variables only'; st.style.color = '#8b949e';
   }
@@ -600,9 +875,12 @@ document.getElementById('qs-message').addEventListener('input', e => {
 });
 
 document.getElementById('qs-sendBtn').addEventListener('click', async () => {
-  const phone   = document.getElementById('qs-phone').value.trim().replace(/[^0-9+]/g, '');
+  const cc      = (document.getElementById('qs-country')?.value || '91').replace(/\D/g, '');
+  const number  = document.getElementById('qs-phone').value.trim().replace(/\D/g, '');
+  const phone   = getFullPhoneFromCountryAndNumber(cc, number);
   const message = document.getElementById('qs-message').value.trim();
-  if (!phone)   return showResult('qs-result', '⛔ Enter a phone number', 'err');
+  const v = validatePhone(phone);
+  if (!v.valid) return showResult('qs-result', '⛔ ' + v.error, 'err');
   if (!message) return showResult('qs-result', '⛔ Enter a message', 'err');
 
   const btn = document.getElementById('qs-sendBtn');
@@ -611,11 +889,11 @@ document.getElementById('qs-sendBtn').addEventListener('click', async () => {
 
   let finalMsg = message;
   const aiOn = document.getElementById('qs-aiEnabled').checked;
-  if (aiOn && settings.apiKey) {
+  const qsAiKey = (settings.aiProvider === 'gemini' ? settings.geminiApiKey : settings.apiKey) || '';
+  if (aiOn && qsAiKey) {
     showResult('qs-result', '🤖 AI rewriting message...', 'info');
-    // Ask background to personalize
-    const r = await new Promise(res => chrome.runtime.sendMessage({ type: 'GENERATE_AI_REPLY', data: { replyText: '', contactName: phone, apiKey: settings.apiKey } }, res));
-    // Simple AI rewrite
+    const r = await new Promise(res => chrome.runtime.sendMessage({ type: 'GENERATE_AI_REPLY', data: { replyText: message, contactName: phone, apiKey: qsAiKey, provider: settings.aiProvider || 'gemini' } }, res));
+    if (r) finalMsg = r;
   }
 
   chrome.runtime.sendMessage({ type: 'QUICK_SEND', data: { phone, message: finalMsg, stealthMode: settings.stealthMode } }, resp => {
@@ -638,6 +916,11 @@ document.getElementById('qs-blastBtn').addEventListener('click', () => {
 
   const phones = phonesRaw.split('\n').map(p => p.trim().replace(/[^0-9+]/g, '')).filter(Boolean);
   if (!phones.length) return showResult('qs-blast-result', '⛔ No valid phone numbers found', 'err');
+
+  const invalid = phones.filter(p => !validatePhone(p).valid);
+  if (invalid.length) {
+    return showResult('qs-blast-result', `⛔ Invalid (country code required, 10–15 digits): ${invalid.slice(0, 3).join(', ')}${invalid.length > 3 ? '…' : ''}`, 'err');
+  }
 
   // Create a mini campaign
   const blastContacts = phones.map(p => ({ name: p, phone: p, status: 'pending' }));
@@ -673,7 +956,7 @@ function scanForReplies() {
 
   chrome.runtime.sendMessage({
     type: 'SCAN_REPLIES',
-    data: { contacts: sentContacts, apiKey: settings.apiKey }
+    data: { contacts: sentContacts, apiKey: (settings.aiProvider === 'gemini' ? settings.geminiApiKey : settings.apiKey) || '', provider: settings.aiProvider || 'gemini' }
   }, resp => {
     btn.disabled = false; btn.textContent = '🔍 Scan';
     document.getElementById('scanInfo').style.display = 'none';
@@ -795,6 +1078,8 @@ function loadAnalytics() {
 
 // ─── SETTINGS TAB ────────────────────────────────────────────────────────────
 function applySettings() {
+  document.getElementById('aiProvider').value     = settings.aiProvider   || 'gemini';
+  document.getElementById('geminiApiKey').value  = settings.geminiApiKey || '';
   document.getElementById('apiKey').value        = settings.apiKey      || '';
   document.getElementById('openaiApiKey').value  = settings.groqApiKey || '';
   document.getElementById('aiEnabled').checked   = settings.aiEnabled   || false;
@@ -828,6 +1113,12 @@ function applySettings() {
   document.getElementById('digestEnabled').checked = settings.digestEnabled || false;
 }
 
+document.getElementById('toggleGeminiKey').addEventListener('click', () => {
+  const inp = document.getElementById('geminiApiKey');
+  const btn = document.getElementById('toggleGeminiKey');
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+  btn.textContent = inp.type === 'password' ? 'Show' : 'Hide';
+});
 document.getElementById('toggleKey').addEventListener('click', () => {
   const inp = document.getElementById('apiKey');
   const btn = document.getElementById('toggleKey');
@@ -836,17 +1127,25 @@ document.getElementById('toggleKey').addEventListener('click', () => {
 });
 
 document.getElementById('testKey').addEventListener('click', async () => {
-  const key = document.getElementById('apiKey').value.trim();
+  const provider = document.getElementById('aiProvider').value;
+  const key = provider === 'gemini' ? document.getElementById('geminiApiKey').value.trim() : document.getElementById('apiKey').value.trim();
   if (!key) return showResult('keyResult', '⛔ Enter an API key first', 'err');
   showResult('keyResult', '⏳ Testing...', 'info');
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 5, messages: [{ role: 'user', content: 'hi' }] })
-    });
-    if (res.ok) showResult('keyResult', '✓ API key is valid! AI features ready.', 'ok');
-    else { const d = await res.json(); showResult('keyResult', '⛔ ' + (d.error?.message || 'Invalid key'), 'err'); }
+    if (provider === 'gemini') {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${encodeURIComponent(key)}`;
+      const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: 'Say hi' }] }], generationConfig: { maxOutputTokens: 5 } }) });
+      if (res.ok) showResult('keyResult', '✓ Gemini API key is valid!', 'ok');
+      else { const d = await res.json(); showResult('keyResult', '⛔ ' + (d.error?.message || 'Invalid key'), 'err'); }
+    } else {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+        body: JSON.stringify({ model: 'claude-3-5-haiku-20241022', max_tokens: 5, messages: [{ role: 'user', content: 'hi' }] })
+      });
+      if (res.ok) showResult('keyResult', '✓ Claude API key is valid!', 'ok');
+      else { const d = await res.json(); showResult('keyResult', '⛔ ' + (d.error?.message || 'Invalid key'), 'err'); }
+    }
   } catch (e) { showResult('keyResult', '⛔ Network error: ' + e.message, 'err'); }
 });
 
@@ -877,9 +1176,11 @@ document.getElementById('testWebhookBtn').addEventListener('click', () => {
 });
 
 document.getElementById('saveSettingsBtn').addEventListener('click', () => {
+  settings.aiProvider   = document.getElementById('aiProvider').value || 'gemini';
+  settings.geminiApiKey = document.getElementById('geminiApiKey').value.trim();
   settings.apiKey       = document.getElementById('apiKey').value.trim();
-  settings.groqApiKey = document.getElementById('openaiApiKey').value.trim();
-  settings.aiEnabled   = document.getElementById('aiEnabled').checked;
+  settings.groqApiKey   = document.getElementById('openaiApiKey').value.trim();
+  settings.aiEnabled    = document.getElementById('aiEnabled').checked;
   settings.minDelay    = parseInt(document.getElementById('minDelay').value)  || 15;
   settings.maxDelay    = parseInt(document.getElementById('maxDelay').value)  || 45;
   settings.dailyLimit  = parseInt(document.getElementById('dailyLimit').value)|| 100;
@@ -946,7 +1247,8 @@ function startCampaign() {
   if (!contacts.length) return showError('Add contacts first (Contacts tab)');
   if (!template)        return showError('Write a message template (Compose tab)');
   if (abEnabled && !templateB) return showError('Write Message B for A/B testing');
-  if (settings.aiEnabled && !settings.apiKey) return showError('Add Claude API key in Settings');
+  const campaignAiKey = (settings.aiProvider === 'gemini' ? settings.geminiApiKey : settings.apiKey) || '';
+  if (settings.aiEnabled && !campaignAiKey) return showError('Add API key in Settings (Gemini free or Claude)');
 
   const minD = parseInt(document.getElementById('minDelay').value) || 15;
   const maxD = parseInt(document.getElementById('maxDelay').value) || 45;
@@ -1376,14 +1678,19 @@ function startAutoReplyBot() {
   const prompt   = document.getElementById('arPrompt').value.trim()   || 'Reply naturally and briefly to the message.';
   const delay    = parseInt(document.getElementById('arDelay').value)  || 2;
   const keyword  = document.getElementById('arKeyword').value.trim();
+  const noKeywordReply = document.getElementById('arNoKeywordReply')?.value?.trim() || '';
+  const noKeywordUseAI = !!document.getElementById('arNoKeywordUseAI')?.checked;
 
-  if (mode === 'ai' && !settings.apiKey) {
-    showToast('Add Claude API key in Settings first', 'err');
+  const provider = settings.aiProvider || 'gemini';
+  const apiKey = provider === 'gemini' ? (settings.geminiApiKey || '') : (settings.apiKey || '');
+  if ((mode === 'ai' || noKeywordUseAI) && !apiKey) {
+    showToast(provider === 'gemini' ? 'Add Gemini API key in Settings (free at aistudio.google.com)' : 'Add Claude API key in Settings first', 'err');
     document.getElementById('arToggle').checked = false;
     return;
   }
 
-  const config = { mode, template, prompt, delay, keyword, apiKey: settings.apiKey, bizHours: settings.bizHours || null };
+  const perChat = !!document.getElementById('arPerChat')?.checked;
+  const config = { mode, template, prompt, delay, keyword, noKeywordReply, noKeywordUseAI, apiKey, provider, bizHours: settings.bizHours || null, perChat };
 
   chrome.tabs.query({ url: 'https://web.whatsapp.com/*' }, tabs => {
     if (!tabs.length) {
@@ -1397,7 +1704,7 @@ function startAutoReplyBot() {
         document.getElementById('arStartBtn').style.display = 'none';
         document.getElementById('arStopBtn').style.display  = 'block';
         document.getElementById('arPulseDot').style.display = 'inline-block';
-        document.getElementById('arStatusText').textContent = `Bot active — ${mode} mode`;
+        document.getElementById('arStatusText').textContent = perChat ? `Bot active — ${mode} (all chats)` : `Bot active — ${mode} mode`;
         addArLogEntry({ incoming: null, reply: '🟢 Bot started (' + mode + ' mode)', success: true, ts: Date.now(), system: true });
       } else {
         document.getElementById('arToggle').checked = false;
@@ -2374,9 +2681,8 @@ ${stageData.map(([label,count])=>`
   </div>`).join('')}
 
 <div class="no-print" style="margin-top:32px;text-align:center">
-  <button onclick="window.print()" style="padding:10px 28px;background:#25D366;color:#fff;border:none;border-radius:6px;font-size:14px;font-weight:600;cursor:pointer">🖨 Print / Save as PDF</button>
+  <button id="rpt-print-btn" type="button" style="padding:10px 28px;background:#25D366;color:#fff;border:none;border-radius:6px;font-size:14px;font-weight:600;cursor:pointer">🖨 Print / Save as PDF</button>
 </div>
-<script>window.addEventListener('load',()=>setTimeout(()=>window.print(),400));<\/script>
 </body></html>`;
 }
 
@@ -2388,9 +2694,14 @@ document.getElementById('generateReportBtn').addEventListener('click', () => {
     if (!resp?.analytics) return showToast('No analytics data yet', 'err');
     chrome.storage.local.get('contacts', d => {
       const allContacts = (d.contacts || []).map(crmDefaults);
-      const html = generateReport({ from, to, allContacts, analytics: resp.analytics });
-      const blob = new Blob([html], { type: 'text/html' });
-      const url  = URL.createObjectURL(blob);
+      // CSP: no inline script — use external script blob so report tab can print
+      const printScript = "window.addEventListener('load',function(){setTimeout(window.print,400);});var b=document.getElementById('rpt-print-btn');if(b)b.addEventListener('click',function(){window.print();});";
+      const scriptBlob = new Blob([printScript], { type: 'application/javascript' });
+      const scriptUrl = URL.createObjectURL(scriptBlob);
+      const htmlWithScript = generateReport({ from, to, allContacts, analytics: resp.analytics })
+        .replace('</body></html>', '<script src="' + scriptUrl + '"><\/script></body></html>');
+      const blob = new Blob([htmlWithScript], { type: 'text/html' });
+      const url = URL.createObjectURL(blob);
       chrome.tabs.create({ url });
       showToast('📄 Report opened in new tab');
     });
