@@ -603,7 +603,9 @@ async function perChatPollUnread() {
   if (!autoReplyConfig?.perChat || arReplying) return;
   const pane = document.querySelector('#pane-side');
   if (!pane) return;
+  const processAllUnread = !!autoReplyConfig.processAllUnread;
   const rows = getVisibleChatRows();
+  let processed = 0;
   for (const row of rows) {
     if (!rowMatchesFilter(row, 'unread')) continue;
     const name = getChatName(row);
@@ -612,7 +614,10 @@ async function perChatPollUnread() {
     row.click();
     await sleep(1500);
     await checkAndReply();
-    break;
+    processed++;
+    if (!processAllUnread) break;
+    await sleep(800);
+    if (processed >= 8) break;
   }
 }
 

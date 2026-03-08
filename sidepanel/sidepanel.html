@@ -34,6 +34,7 @@
     <button class="tab" data-tab="replies">💬 Replies</button>
     <button class="tab" data-tab="analytics">📊 Stats</button>
     <button class="tab" data-tab="dashboard">📋 Dashboard</button>
+    <button class="tab" data-tab="report">📈 Data Report</button>
     <button class="tab" data-tab="tasks">✅ Tasks</button>
     <button class="tab" data-tab="settings">⚙️ Settings</button>
   </div>
@@ -439,6 +440,23 @@
         </div>
       </div>
 
+      <!-- One-click automatic chat: no template, no manual setup -->
+      <div class="card mb-10" style="border-color: var(--green, #25D366); background: rgba(37,211,102,.08);">
+        <div class="section-title mb-4">💬 Automatic chat</div>
+        <p class="hint mb-6">No template to add. AI replies to every message (hi, questions, anything) in all chats. Add a <strong>Gemini API key</strong> in Settings once, then one click below.</p>
+        <button type="button" class="btn btn-green" style="width:100%;margin-bottom:8px" id="arAutoChatBtn">▶ Start automatic chat</button>
+        <div class="hint mt-4">Same as: Fully automatic + AI + Monitor all chats. Stops with the red button when bot is on.</div>
+      </div>
+
+      <!-- Fully automatic: reply to every message in all chats with AI, no confirmation -->
+      <div class="card mb-10" style="border-color: var(--green, #25D366); background: rgba(37,211,102,.06);">
+        <label class="row align-center gap-8">
+          <input type="checkbox" id="arFullyAuto" class="checkbox">
+          <span class="label" style="margin:0;font-weight:700">🟢 Fully automatic</span>
+        </label>
+        <div class="hint mt-4">No template needed — AI replies to every message. Optional: use keyword filter or template mode below if you want.</div>
+      </div>
+
       <!-- Mode selector -->
       <div class="mode-tabs">
         <button class="mode-tab active" data-mode="template">📝 Template</button>
@@ -636,6 +654,25 @@
 
       <div id="dashboard-campaigns">
         <div class="empty-state">No campaigns yet. Run a campaign to see it here.</div>
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════════
+         DATA REPORT TAB (Excel/CSV → Power BI-style analysis)
+         ════════════════════════════════════════════════ -->
+    <div class="panel" id="panel-report">
+      <div class="section-badge mb-6">📈 Data Report</div>
+      <p class="hint mb-8">Upload a CSV or Excel file. Get a Power BI–style report: summary stats, column analysis, and charts.</p>
+      <div class="card p-8 mb-10">
+        <div class="report-upload" id="reportUploadBox">
+          <div class="report-upload-icon">📁</div>
+          <div class="report-upload-text">Drop CSV or Excel here, or click to choose</div>
+          <input type="file" id="reportFileInput" accept=".csv,.xlsx,.xls" hidden>
+        </div>
+        <div class="hint mt-4">Supports .csv and .xlsx (Excel). For .xlsx, open in Excel and Save As CSV if report fails.</div>
+      </div>
+      <div id="reportOutput" class="report-output">
+        <div class="empty-state">Upload a file to see the report.</div>
       </div>
     </div>
 

@@ -207,6 +207,7 @@ document.querySelectorAll('.tab').forEach(t => {
     if (t.dataset.tab === 'analytics') loadAnalytics();
     if (t.dataset.tab === 'pipeline')  renderPipeline();
     if (t.dataset.tab === 'dashboard') renderDashboard();
+    if (t.dataset.tab === 'report') initReportTab();
     if (t.dataset.tab === 'tasks') { ensureTaskNotificationPermission(); renderTasks(); }
     if (t.dataset.tab === 'auto') {
       chrome.storage.local.get('settings', (d) => { if (d.settings) settings = { ...settings, ...d.settings }; });
@@ -341,6 +342,154 @@ document.getElementById('task-sp-save')?.addEventListener('click', () => {
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes.waTasks) renderTasks();
 });
+
+// ─── DATA REPORT TAB (Excel/CSV → Power BI–style analysis) ─────────────────────
+function initReportTab() {
+  const box = document.getElementById('reportUploadBox');
+  const input = document.getElementById('reportFileInput');
+  if (!box || !input) return;
+  box.onclick = () => input.click();
+  input.onchange = (e) => { if (e.target.files[0]) handleReportFile(e.target.files[0]); e.target.value = ''; };
+  box.ondragover = (e) => { e.preventDefault(); box.classList.add('drag-over'); };
+  box.ondragleave = () => box.classList.remove('drag-over');
+  box.ondrop = (e) => { e.preventDefault(); box.classList.remove('drag-over'); if (e.dataTransfer.files[0]) handleReportFile(e.dataTransfer.files[0]); };
+}
+
+function parseCSVToRows(text) {
+  const lines = text.trim().split(/\r?\n/).filter(l => l.trim());
+  if (lines.length < 2) return null;
+  const headers = splitCSVLine(lines[0]).map(h => h.trim());
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const vals = splitCSVLine(lines[i]);
+    const obj = {};
+    headers.forEach((h, idx) => { obj[h] = (vals[idx] != null ? vals[idx] : '').trim(); });
+    rows.push(obj);
+  }
+  return { headers, rows };
+}
+
+function handleReportFile(file) {
+  const out = document.getElementById('reportOutput');
+  if (!out) return;
+  out.innerHTML = '<div class="muted-text">Analyzing…</div>';
+  const name = (file.name || '').toLowerCase();
+  if (name.endsWith('.csv')) {
+    const r = new FileReader();
+    r.onload = () => {
+      const data = parseCSVToRows(r.result);
+      if (!data) { out.innerHTML = '<div class="empty-state">CSV needs at least 2 rows.</div>'; return; }
+      renderDataReport(data.headers, data.rows, out);
+    };
+    r.readAsText(file);
+    return;
+  }
+  if (name.endsWith('.xlsx') || name.endsWith('.xls')) {
+    const r = new FileReader();
+    r.onload = () => {
+      const ab = r.result;
+      let data = null;
+      if (typeof XLSX !== 'undefined') {
+        try {
+          const wb = XLSX.read(ab, { type: 'array' });
+          const ws = wb.Sheets[wb.SheetNames[0]];
+          const aoa = XLSX.utils.sheet_to_json(ws, { header: 1 });
+          if (aoa.length >= 2) {
+            const headers = aoa[0].map(h => String(h || '').trim());
+            const rows = aoa.slice(1).map(row => {
+              const obj = {};
+              headers.forEach((h, i) => { obj[h] = row[i] != null ? String(row[i]).trim() : ''; });
+              return obj;
+            });
+            data = { headers, rows };
+          }
+        } catch (e) { console.warn(e); }
+      }
+      if (!data) { out.innerHTML = '<div class="empty-state">Could not read Excel. Save as CSV in Excel and upload the CSV.</div>'; return; }
+      renderDataReport(data.headers, data.rows, out);
+    };
+    r.readAsArrayBuffer(file);
+    return;
+  }
+  out.innerHTML = '<div class="empty-state">Use a .csv or .xlsx file.</div>';
+}
+
+function inferType(vals) {
+  const nonEmpty = vals.filter(v => v != null && String(v).trim() !== '');
+  if (!nonEmpty.length) return 'string';
+  let num = 0, date = 0;
+  for (const v of nonEmpty) {
+    const s = String(v).trim();
+    if (/^-?\d*\.?\d+$/.test(s) || /^-?\d+$/.test(s)) num++;
+    else if (!isNaN(new Date(s).getTime()) && s.length >= 6) date++;
+  }
+  if (num >= nonEmpty.length * 0.8) return 'number';
+  if (date >= nonEmpty.length * 0.5) return 'date';
+  return 'string';
+}
+
+function analyzeColumn(colName, rows) {
+  const vals = rows.map(r => r[colName]);
+  const nonEmpty = vals.filter(v => v != null && String(v).trim() !== '');
+  const type = inferType(vals);
+  const uniques = new Set(nonEmpty.map(v => String(v).trim())).size;
+  const res = { type, count: rows.length, nonEmpty: nonEmpty.length, nulls: rows.length - nonEmpty.length, uniques };
+  if (type === 'number') {
+    const nums = nonEmpty.map(v => parseFloat(String(v).replace(/,/g, ''))).filter(n => !isNaN(n));
+    res.min = nums.length ? Math.min(...nums) : null;
+    res.max = nums.length ? Math.max(...nums) : null;
+    res.sum = nums.length ? nums.reduce((a, b) => a + b, 0) : null;
+    res.mean = nums.length ? res.sum / nums.length : null;
+  }
+  if (type === 'string' || type === 'date') {
+    const counts = {};
+    nonEmpty.forEach(v => { const k = String(v).trim(); counts[k] = (counts[k] || 0) + 1; });
+    res.valueCounts = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 10);
+  }
+  return res;
+}
+
+function renderDataReport(headers, rows, container) {
+  const totalRows = rows.length;
+  const totalCols = headers.length;
+  const analyses = {};
+  headers.forEach(h => { analyses[h] = analyzeColumn(h, rows); });
+  let html = `
+    <div class="report-summary row gap-8 mb-10" style="flex-wrap:wrap">
+      <div class="card p-6 report-card"><div class="report-card-value">${totalRows.toLocaleString()}</div><div class="report-card-label">Rows</div></div>
+      <div class="card p-6 report-card"><div class="report-card-value">${totalCols}</div><div class="report-card-label">Columns</div></div>
+      <div class="card p-6 report-card"><div class="report-card-value">${(totalRows * totalCols).toLocaleString()}</div><div class="report-card-label">Cells</div></div>
+    </div>
+    <div class="section-title mb-6">Column analysis</div>
+  `;
+  headers.forEach(col => {
+    const a = analyses[col];
+    const pct = totalRows ? Math.round((a.nonEmpty / totalRows) * 100) : 0;
+    html += `<div class="card p-8 mb-8 report-column">
+      <div class="row justify-between align-center mb-4"><strong>${esc(col)}</strong><span class="muted-text">${a.type} · ${a.nonEmpty} filled (${pct}%) · ${a.uniques} unique</span></div>`;
+    if (a.nulls) html += `<div class="hint mb-4">${a.nulls} empty</div>`;
+    if (a.type === 'number' && a.min != null) {
+      html += `<div class="row gap-8 mb-2"><span>Min</span><span>${Number(a.min).toLocaleString()}</span></div>
+        <div class="row gap-8 mb-2"><span>Max</span><span>${Number(a.max).toLocaleString()}</span></div>
+        <div class="row gap-8 mb-2"><span>Sum</span><span>${Number(a.sum).toLocaleString()}</span></div>
+        <div class="row gap-8 mb-2"><span>Avg</span><span>${Number(a.mean).toLocaleString(undefined, { maximumFractionDigits: 2 })}</span></div>`;
+      const range = a.max - a.min || 1;
+      html += `<div class="report-bar-wrap mt-4"><div class="report-bar" style="width:${((a.mean - a.min) / range * 100)}%"></div></div><div class="hint mt-2">Mean position in range</div>`;
+    }
+    if ((a.type === 'string' || a.type === 'date') && a.valueCounts && a.valueCounts.length) {
+      const maxCount = a.valueCounts[0][1];
+      html += '<div class="report-bars mt-4">';
+      a.valueCounts.forEach(([label, count]) => {
+        const w = maxCount ? (count / maxCount * 100) : 0;
+        const safe = esc(label).substring(0, 40) + (label.length > 40 ? '…' : '');
+        html += `<div class="report-bar-row"><span class="report-bar-label" title="${esc(label)}">${safe}</span><div class="report-bar-wrap"><div class="report-bar" style="width:${w}%"></div></div><span class="report-bar-count">${count}</span></div>`;
+      });
+      html += '</div>';
+    }
+    html += '</div>';
+  });
+  container.innerHTML = html;
+}
 
 // ─── CSV Upload ───────────────────────────────────────────────────────────────
 document.getElementById('chooseFileBtn').addEventListener('click', () => document.getElementById('csvFile').click());
@@ -1650,6 +1799,29 @@ document.getElementById('arDelay').addEventListener('input', e => {
   document.getElementById('arDelayLabel').textContent = `${v}s`;
 });
 
+// One-click Start automatic chat (no template, no manual config)
+document.getElementById('arAutoChatBtn')?.addEventListener('click', () => {
+  document.getElementById('arFullyAuto').checked = true;
+  document.getElementById('arPerChat').checked = true;
+  document.getElementById('arNoKeywordUseAI').checked = true;
+  document.getElementById('arKeyword').value = '';
+  const aiTab = document.querySelector('.mode-tab[data-mode="ai"]');
+  if (aiTab) { document.querySelectorAll('.mode-tab').forEach(t => t.classList.remove('active')); aiTab.classList.add('active'); document.getElementById('arTemplateMode').style.display = 'none'; document.getElementById('arAIMode').style.display = 'block'; }
+  document.getElementById('arToggle').checked = true;
+  startAutoReplyBot();
+});
+
+// Fully automatic: sync options when toggled
+document.getElementById('arFullyAuto')?.addEventListener('change', e => {
+  if (e.target.checked) {
+    document.getElementById('arPerChat').checked = true;
+    document.getElementById('arNoKeywordUseAI').checked = true;
+    document.getElementById('arKeyword').value = '';
+    const aiTab = document.querySelector('.mode-tab[data-mode="ai"]');
+    if (aiTab) { document.querySelectorAll('.mode-tab').forEach(t => t.classList.remove('active')); aiTab.classList.add('active'); document.getElementById('arTemplateMode').style.display = 'none'; document.getElementById('arAIMode').style.display = 'block'; }
+  }
+});
+
 // Toggle checkbox
 document.getElementById('arToggle').addEventListener('change', e => {
   if (e.target.checked) startAutoReplyBot();
@@ -1690,7 +1862,26 @@ function startAutoReplyBot() {
   }
 
   const perChat = !!document.getElementById('arPerChat')?.checked;
-  const config = { mode, template, prompt, delay, keyword, noKeywordReply, noKeywordUseAI, apiKey, provider, bizHours: settings.bizHours || null, perChat };
+  const fullyAuto = !!document.getElementById('arFullyAuto')?.checked;
+  if (fullyAuto && !apiKey) {
+    showToast('Fully automatic needs an AI key (Settings → Gemini or Claude)', 'err');
+    document.getElementById('arToggle').checked = false;
+    return;
+  }
+  const config = {
+    mode: fullyAuto ? 'ai' : mode,
+    template,
+    prompt: fullyAuto ? (prompt || 'Reply naturally and briefly. Be helpful and concise.') : prompt,
+    delay,
+    keyword: fullyAuto ? '' : keyword,
+    noKeywordReply: fullyAuto ? '' : noKeywordReply,
+    noKeywordUseAI: fullyAuto ? true : noKeywordUseAI,
+    apiKey,
+    provider,
+    bizHours: settings.bizHours || null,
+    perChat: fullyAuto ? true : perChat,
+    processAllUnread: !!fullyAuto
+  };
 
   chrome.tabs.query({ url: 'https://web.whatsapp.com/*' }, tabs => {
     if (!tabs.length) {
@@ -1703,8 +1894,10 @@ function startAutoReplyBot() {
         autoReplyActive = true;
         document.getElementById('arStartBtn').style.display = 'none';
         document.getElementById('arStopBtn').style.display  = 'block';
+        const acBtn = document.getElementById('arAutoChatBtn');
+        if (acBtn) acBtn.style.display = 'none';
         document.getElementById('arPulseDot').style.display = 'inline-block';
-        document.getElementById('arStatusText').textContent = perChat ? `Bot active — ${mode} (all chats)` : `Bot active — ${mode} mode`;
+        document.getElementById('arStatusText').textContent = fullyAuto ? 'Bot active — fully automatic (all chats)' : (perChat ? `Bot active — ${mode} (all chats)` : `Bot active — ${mode} mode`);
         addArLogEntry({ incoming: null, reply: '🟢 Bot started (' + mode + ' mode)', success: true, ts: Date.now(), system: true });
       } else {
         document.getElementById('arToggle').checked = false;
@@ -1721,6 +1914,8 @@ function stopAutoReplyBot() {
   autoReplyActive = false;
   document.getElementById('arStartBtn').style.display = 'block';
   document.getElementById('arStopBtn').style.display  = 'none';
+  const acBtn = document.getElementById('arAutoChatBtn');
+  if (acBtn) acBtn.style.display = '';
   document.getElementById('arPulseDot').style.display = 'none';
   document.getElementById('arStatusText').textContent = 'Bot is off';
   addArLogEntry({ incoming: null, reply: '🔴 Bot stopped', success: true, ts: Date.now(), system: true });
