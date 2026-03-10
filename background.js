@@ -78,19 +78,49 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   }
 });
 
+// ─── Flag images as data URLs (work in all contexts, no CSP issues) ───────────
+const FLAG_ISOS = ['in','us','gb','jp','cn','de','fr','au','br','mx','it','es','ru','kr','nl','ae','sa','sg','my','id','ph','vn','tr','pk','ir','eg','ng','za','ke','ma','dz','tn','sd','gh','tz','ug','rw','cm','pt','pl','se','no','dk','fi','ie','nz','bd','lk','np'];
+const FLAG_CDN = 'https://flagcdn.com/w40';
+
+async function fetchFlagAsDataUrl(iso) {
+  const url = `${FLAG_CDN}/${iso}.png`;
+  const res = await fetch(url);
+  if (!res.ok) return null;
+  const blob = await res.blob();
+  return new Promise((resolve) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => resolve(null);
+    r.readAsDataURL(blob);
+  });
+}
+
+async function getFlagUrls() {
+  const stored = await chrome.storage.local.get('flagUrls');
+  if (stored.flagUrls && Object.keys(stored.flagUrls).length >= 40) return stored.flagUrls;
+  const flagUrls = {};
+  for (const iso of FLAG_ISOS) {
+    const dataUrl = await fetchFlagAsDataUrl(iso);
+    if (dataUrl) flagUrls[iso] = dataUrl;
+  }
+  await chrome.storage.local.set({ flagUrls });
+  return flagUrls;
+}
+
 // ─── Message Router ───────────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   console.log('[WA] Message:', msg.type);
 
   // Async handlers — return true so Chrome keeps channel open
   const async_handlers = {
+    GET_FLAG_URLS:       () => getFlagUrls(),
     QUICK_SEND:          () => quickSend(msg.data),
     SCAN_REPLIES:        () => scanReplies(msg.data),
     SEND_REPLY:          () => sendReplyToContact(msg.data),
     OPEN_CHAT_QUOTED:    () => openChatQuoted(msg.data),
     OPEN_CHAT:           () => openChat(msg.data),
     OPEN_CHAT_BY_NAME:   () => openChatByName(msg.data),
-    GENERATE_AI_REPLY:   () => generateAIReply(msg.data.replyText, msg.data.contactName, msg.data.apiKey),
+    GENERATE_AI_REPLY:   () => generateAIReply(msg.data.replyText, msg.data.contactName, msg.data.apiKey, msg.data.provider),
     SCHEDULE_CAMPAIGN:   () => scheduleCampaign(msg.data),
     GET_ANALYTICS:       () => getAnalytics(),
     CLEAR_ANALYTICS:     () => clearAnalytics(),
@@ -264,7 +294,7 @@ async function scheduleCampaign(data) {
 
 // ─── Reply Scanner ────────────────────────────────────────────────────────────
 async function scanReplies(data) {
-  const { contacts, apiKey } = data;
+  const { contacts, apiKey, provider } = data;
   console.log('[WA] Scanning replies for', contacts.length, 'contacts');
 
   const tabId = await findOrCreateWATab();
@@ -287,7 +317,7 @@ async function scanReplies(data) {
       let aiSuggestion = null, category = null;
       if (apiKey) {
         try {
-          aiSuggestion = await generateAIReply(result.text, contact.name || contact.phone, apiKey);
+          aiSuggestion = await generateAIReply(result.text, contact.name || contact.phone, apiKey, provider);
         } catch (e) { console.warn('[WA] AI reply failed:', e.message); }
         try {
           category = await classifyReply(result.text, apiKey);
@@ -435,22 +465,20 @@ async function openChatQuoted(data) {
 }
 
 // ─── AI Reply Generator ───────────────────────────────────────────────────────
-async function generateAIReply(replyText, contactName, apiKey) {
+async function generateAIReply(replyText, contactName, apiKey, provider) {
+  const prompt = `You are helping reply to a WhatsApp message from ${contactName}.\n\nTheir message: "${replyText}"\n\nWrite a short, friendly, natural reply (max 2 sentences). Be helpful and conversational. Return ONLY the reply text, nothing else.`;
+  const useGemini = (provider || 'gemini') === 'gemini';
+  if (useGemini && apiKey) {
+    const out = await getGeminiReply('You are a helpful assistant. Reply naturally and briefly.', replyText, apiKey);
+    return out.reply || null;
+  }
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
     body: JSON.stringify({
-      model: 'claude-haiku-4-5-20251001',
+      model: 'claude-3-5-haiku-20241022',
       max_tokens: 300,
-      messages: [{
-        role: 'user',
-        content: `You are helping reply to a WhatsApp message from ${contactName}.
-
-Their message: "${replyText}"
-
-Write a short, friendly, natural reply (max 2 sentences). Be helpful and conversational.
-Return ONLY the reply text, nothing else.`
-      }]
+      messages: [{ role: 'user', content: prompt }]
     })
   });
   if (!response.ok) throw new Error('API error ' + response.status);
@@ -503,13 +531,16 @@ async function sendWhatsAppMessage(tabId, phone, message, stealthMode = false, i
     if (!phoneClean) return { success: false, error: 'Invalid phone number' };
 
     if (imageUrl) {
-      // Navigate to the chat, then inject image via content script
+      const isVideo = (imageMime || '').startsWith('video/');
+      const name = imageName || (isVideo ? 'video.mp4' : 'image.jpg');
+      const payload = { imageData: imageUrl, imageMime, imageName: name, caption: message };
+      await chrome.storage.session.set({ waSendImage: payload });
       const chatUrl = `https://web.whatsapp.com/send?phone=${phoneClean}`;
       await chrome.tabs.update(tabId, { url: chatUrl, active: !stealthMode });
       await sleep(800);
       await waitForTabLoad(tabId);
       await sleep(5000);
-      const response = await sendMessageToTab(tabId, { type: 'SEND_WITH_IMAGE', imageData: imageUrl, imageMime, imageName, caption: message }, 4);
+      const response = await sendMessageToTab(tabId, { type: 'SEND_WITH_IMAGE', imageKey: 'waSendImage' }, 4);
       return response || { success: false, error: 'No response from WA page — is WA Web logged in?' };
     }
 
@@ -593,16 +624,34 @@ async function buildMessage(template, contact, settings) {
     });
   }
 
-  if (!settings.aiEnabled || !settings.apiKey) return base;
+  const useGemini = (settings.aiProvider || 'gemini') === 'gemini';
+  const apiKey = useGemini ? (settings.geminiApiKey || '') : (settings.apiKey || '');
+  if (!settings.aiEnabled || !apiKey) return base;
 
+  const prompt = `Personalize this WhatsApp message for the contact. Make it feel natural and personal. Keep the same intent. Max 300 chars. Return ONLY the message.\n\nContact: ${JSON.stringify(contact)}\n\nMessage:\n${base}`;
   try {
+    if (useGemini) {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { maxOutputTokens: 400, temperature: 0.7 }
+        })
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error?.message || 'API ' + res.status);
+      const raw = d.candidates?.[0]?.content?.parts?.[0]?.text;
+      return (raw && typeof raw === 'string') ? raw.trim() : base;
+    }
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': settings.apiKey, 'anthropic-version': '2023-06-01' },
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
       body: JSON.stringify({
         model: 'claude-haiku-4-5-20251001',
         max_tokens: 400,
-        messages: [{ role: 'user', content: `Personalize this WhatsApp message for the contact. Make it feel natural and personal. Keep the same intent. Max 300 chars. Return ONLY the message.\n\nContact: ${JSON.stringify(contact)}\n\nMessage:\n${base}` }]
+        messages: [{ role: 'user', content: prompt }]
       })
     });
     if (!res.ok) throw new Error('API ' + res.status);
@@ -635,9 +684,9 @@ async function classifyReply(text, apiKey) {
   if (!apiKey) return null;
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
     body: JSON.stringify({
-      model: 'claude-haiku-4-5-20251001',
+      model: 'claude-3-5-haiku-20241022',
       max_tokens: 10,
       messages: [{ role: 'user', content: `Classify this WhatsApp reply into exactly ONE of these categories:\nInterested\nNot Interested\nQuestion\nNeeds Callback\nOther\n\nReply: "${text}"\n\nReturn ONLY the category name.` }]
     })
@@ -690,24 +739,69 @@ async function checkBirthdays() {
 }
 
 // ─── AI Auto Reply ────────────────────────────────────────────────────────────
-async function getAIAutoReply({ text, prompt, apiKey }) {
-  if (!apiKey) return { reply: null };
+const DEFAULT_AI_AUTO_REPLY_PROMPT = `You are a helpful assistant replying to WhatsApp messages. Use the conversation context: read the recent chat and reply in a way that makes sense. Don't repeat the same phrase every time — vary your replies based on what they said (e.g. answer their question, refer to earlier messages). Reply naturally and briefly (1-2 sentences). Return ONLY the reply text, no quotes or labels.`;
+
+function formatChatHistoryForPrompt(chatHistory) {
+  if (!Array.isArray(chatHistory) || chatHistory.length === 0) return '';
+  const lines = chatHistory.map(m => {
+    const who = m.role === 'user' ? 'Them' : 'Me';
+    return `${who}: ${(m.text || '').trim()}`;
+  }).filter(s => s.length > 0);
+  return lines.join('\n');
+}
+
+async function getGeminiReply(instruction, userMessage, apiKey, chatHistory) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`;
+  let block = `${instruction}\n\n---\n`;
+  const historyStr = formatChatHistoryForPrompt(chatHistory);
+  if (historyStr) block += `Recent conversation:\n${historyStr}\n\n`;
+  block += `Latest message from them: "${(userMessage || '').trim()}"\n\nReply to the latest message (use context; don't say the same thing every time). Only the reply text:`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: block }] }],
+      generationConfig: { maxOutputTokens: 256, temperature: 0.8 }
+    })
+  });
+  const d = await res.json().catch(() => ({}));
+  if (!res.ok) return { reply: null, error: d.error?.message || 'API ' + res.status };
+  const raw = d.candidates?.[0]?.content?.parts?.[0]?.text;
+  return { reply: (raw && typeof raw === 'string') ? raw.trim() : null };
+}
+
+async function getAIAutoReply({ text, prompt, apiKey, provider, chatHistory }) {
+  const key = (apiKey || '').trim();
+  if (!key) return { reply: null, error: 'No API key' };
+  const instruction = (prompt && prompt.trim()) ? prompt.trim() : DEFAULT_AI_AUTO_REPLY_PROMPT;
+  const useGemini = (provider || 'gemini') === 'gemini';
+  const historyStr = formatChatHistoryForPrompt(chatHistory);
+  const userBlock = historyStr
+    ? `Recent conversation:\n${historyStr}\n\nLatest message from them: "${(text || '').trim()}"\n\nReply to the latest message (use context; vary your reply). Only the reply text:`
+    : `Message from user: "${(text || '').trim()}"\n\nYour reply (only the reply text):`;
   try {
+    if (useGemini) {
+      return await getGeminiReply(instruction, text, key, chatHistory);
+    }
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
       body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 200,
-        messages: [{ role: 'user', content: `${prompt}\n\nMessage received: "${text}"\n\nReply (max 2 sentences, natural tone):` }]
+        model: 'claude-3-5-haiku-20241022',
+        max_tokens: 256,
+        messages: [{ role: 'user', content: `${instruction}\n\n---\n${userBlock}` }]
       })
     });
-    if (!response.ok) return { reply: null };
-    const d = await response.json();
-    return { reply: d.content?.[0]?.text?.trim() || null };
+    const d = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      console.warn('[WA] AI auto-reply API error:', response.status, d.error || response.statusText);
+      return { reply: null, error: d.error?.message || 'API error ' + response.status };
+    }
+    const raw = d.content?.[0]?.text;
+    return { reply: (raw && typeof raw === 'string') ? raw.trim() : null };
   } catch (e) {
     console.warn('[WA] AI auto-reply failed:', e.message);
-    return { reply: null };
+    return { reply: null, error: e.message };
   }
 }
 
@@ -799,11 +893,15 @@ async function executeDripStep(alarmName) {
   const step = seq.steps[stepIndex];
   if (!step) { console.warn('[WA] Drip: step not found', stepIndex); return; }
 
+  const enrollment = enrolls[enrollIdx];
+  const contact = { phone, name: enrollment.name || phone };
+  const message = fillTemplate(step.template, contact);
+
   console.log(`[WA] Drip step ${stepIndex} for ${phone} in seq "${seq.name}"`);
 
   const tabId = await findOrCreateWATab();
   await sleep(2000);
-  await sendWhatsAppMessage(tabId, phone, step.template);
+  await sendWhatsAppMessage(tabId, phone, message);
 
   // Schedule next step or remove enrollment
   const nextStepIndex = stepIndex + 1;

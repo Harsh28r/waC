@@ -34,7 +34,17 @@
     <button class="tab" data-tab="replies">💬 Replies</button>
     <button class="tab" data-tab="analytics">📊 Stats</button>
     <button class="tab" data-tab="dashboard">📋 Dashboard</button>
+    <button class="tab" data-tab="report">📈 Data Report</button>
+    <button class="tab" data-tab="tasks">✅ Tasks</button>
     <button class="tab" data-tab="settings">⚙️ Settings</button>
+  </div>
+
+  <!-- ── Metrics strip (visible on all tabs) ───────────────────── -->
+  <div class="metrics-strip" id="metricsStrip">
+    <span class="metrics-item" title="Messages sent"><strong id="mSent">0</strong> sent</span>
+    <span class="metrics-item" title="Failed sends"><strong id="mFailed">0</strong> failed</span>
+    <span class="metrics-item" title="Replies received"><strong id="mReplies">0</strong> replies</span>
+    <span class="metrics-item" title="Tasks due today"><strong id="mTasksToday">0</strong> tasks today</span>
   </div>
 
   <!-- ── Panels ───────────────────────────────────────────────── -->
@@ -50,7 +60,8 @@
         <div class="pinned-strip-label">📌 Quick Pin <span id="pinnedCount" class="pinned-count">0/6</span></div>
         <div class="row gap-6 mb-6">
           <input type="text" id="pin-name"  class="input pin-input" placeholder="Name (optional)">
-          <input type="text" id="pin-phone" class="input pin-input" placeholder="Phone (+91...)">
+          <div id="pin-country-wrap" class="country-picker-wrap"><input type="hidden" id="pin-country" value="91"></div>
+          <input type="text" id="pin-phone" class="input pin-input" placeholder="10-digit number" maxlength="10" inputmode="numeric" autocomplete="tel">
           <button class="btn btn-outline btn-sm" id="pinAddBtn">Pin</button>
         </div>
         <div id="pinnedChipList" class="pinned-chip-list"></div>
@@ -68,7 +79,8 @@
 
       <div class="row gap-6 mb-10">
         <input type="text" id="manualName"  placeholder="Name" class="input">
-        <input type="text" id="manualPhone" placeholder="Phone with country code" class="input" style="flex:1.8">
+        <div id="manualCountry-wrap" class="country-picker-wrap"><input type="hidden" id="manualCountry" value="91"></div>
+        <input type="text" id="manualPhone" placeholder="10-digit number" class="input" style="flex:1.2" maxlength="10" inputmode="numeric" autocomplete="tel">
         <button class="btn btn-green btn-sm" id="addBtn">Add</button>
       </div>
 
@@ -175,30 +187,32 @@
 
       <!-- Campaign Name -->
       <div class="form-group">
-        <label class="label">Campaign Name <span style="font-weight:400;text-transform:none">(optional)</span></label>
+        <label class="label">Campaign Name <span class="label-optional">(optional)</span></label>
         <input type="text" id="campaignName" class="input" placeholder="e.g. June Promo, Cold Outreach Wave 1">
       </div>
 
-      <!-- Image/Video Attachment (optional) -->
-      <div class="form-group">
-        <label class="label">📷 Attach Image / Video <span style="font-weight:400;text-transform:none">(optional — message becomes caption)</span></label>
+      <!-- Image / Video Attachment -->
+      <div class="card form-group compose-attach-card">
+        <div class="section-title mb-6">📷 Attach Image or Video</div>
+        <p class="hint mb-6">Optional. If you attach a file, the message below is sent as its caption.</p>
         <input type="file" id="imageFile" accept="image/*,video/mp4,video/3gpp,video/quicktime" style="display:none">
-        <div class="row gap-6 align-center">
+        <div class="row gap-6 align-center flex-wrap">
           <button class="btn btn-outline btn-sm" id="imagePickBtn" type="button">🖼 Choose Image / Video</button>
           <span class="muted-text" id="imageFileName">No file chosen</span>
-          <button class="btn btn-outline btn-sm" id="imageClearBtn" type="button" style="display:none">✕</button>
+          <button class="btn btn-outline btn-sm" id="imageClearBtn" type="button" style="display:none">✕ Clear</button>
         </div>
-        <div id="imagePreview" style="display:none;margin-top:8px">
-          <img id="imagePreviewImg" style="max-width:100%;max-height:120px;border-radius:6px;border:1px solid #30363d" alt="preview">
-          <video id="videoPreviewEl" style="display:none;max-width:100%;max-height:120px;border-radius:6px;border:1px solid #30363d" controls muted></video>
+        <div id="imagePreview" class="compose-media-preview" style="display:none">
+          <img id="imagePreviewImg" class="compose-preview-img" alt="Preview" style="display:none">
+          <div id="videoPreviewLabel" class="compose-video-label" style="display:none">🎬 Video: <span id="videoFileName"></span></div>
         </div>
       </div>
 
       <!-- Message Template -->
-      <div class="form-group">
-        <label class="label">Message Template A <span style="font-weight:400;text-transform:none" id="captionHint" style="display:none">(used as media caption)</span></label>
-        <div class="hint mb-6">Variables: <code>{name}</code> <code>{phone}</code> <code>{company}</code> or any CSV column</div>
-        <textarea id="msgTemplate" class="textarea" rows="6" placeholder="Hi {name}! I wanted to reach out about..."></textarea>
+      <div class="card form-group compose-template-card">
+        <div class="section-title mb-4">✉️ Message Template A</div>
+        <p id="captionHint" class="hint mb-4" style="display:none">This text will be sent as the <strong>caption</strong> for the image/video above.</p>
+        <p class="hint mb-6">Variables: <code>{name}</code> <code>{phone}</code> <code>{company}</code> or any CSV column</p>
+        <textarea id="msgTemplate" class="textarea compose-textarea" rows="6" placeholder="Hi {name}! I wanted to reach out about..."></textarea>
         <div class="row justify-between mt-4">
           <span class="muted-text" id="charCount">0 chars</span>
           <span class="muted-text" id="waLimit"></span>
@@ -219,7 +233,8 @@
         </div>
         <div id="abPanel" style="display:none" class="mt-10">
           <label class="label">Message Template B</label>
-          <textarea id="msgTemplateB" class="textarea" rows="5" placeholder="Alternative message for B group..."></textarea>
+          <p class="hint mb-4">Same variables as Template A. Half of contacts get A, half get B.</p>
+          <textarea id="msgTemplateB" class="textarea compose-textarea" rows="5" placeholder="Alternative message for B group..."></textarea>
         </div>
       </div>
 
@@ -260,8 +275,9 @@
       </div>
 
       <!-- Preview -->
-      <div class="form-group">
-        <label class="label">Preview</label>
+      <div class="card form-group">
+        <div class="section-title mb-4">👁 Preview</div>
+        <p class="hint mb-4">See how your message looks with a contact's data.</p>
         <select id="previewPicker" class="input mb-6"><option value="">Select contact for preview...</option></select>
         <div class="preview-bubble" id="previewBubble">Write a template and select a contact to preview.</div>
       </div>
@@ -277,8 +293,11 @@
 
       <div class="form-group">
         <label class="label">Phone Number</label>
-        <input type="text" id="qs-phone" placeholder="Country code + number e.g. 911234567890" class="input">
-        <div class="hint mt-4">Include country code, no spaces or dashes</div>
+        <div class="row gap-6 align-center">
+          <div id="qs-country-wrap" class="country-picker-wrap"><input type="hidden" id="qs-country" value="91"></div>
+          <input type="text" id="qs-phone" placeholder="10-digit number" class="input" style="flex:1" maxlength="10" inputmode="numeric" autocomplete="tel">
+        </div>
+        <div class="hint mt-4">Select country + enter 10-digit number</div>
       </div>
 
       <div class="form-group">
@@ -314,7 +333,7 @@
 
       <div class="form-group">
         <label class="label">Phone Numbers</label>
-        <textarea id="qs-phones" class="textarea" rows="4" placeholder="One number per line:&#10;911234567890&#10;12125551234&#10;447700900123"></textarea>
+        <textarea id="qs-phones" class="textarea" rows="4" placeholder="One number per line (country code + number, 10–15 digits):&#10;919876543210&#10;12125551234&#10;447700900123"></textarea>
       </div>
 
       <div class="form-group">
@@ -421,6 +440,23 @@
         </div>
       </div>
 
+      <!-- One-click automatic chat: no template, no manual setup -->
+      <div class="card mb-10" style="border-color: var(--green, #25D366); background: rgba(37,211,102,.08);">
+        <div class="section-title mb-4">💬 Automatic chat</div>
+        <p class="hint mb-6">No template to add. AI replies to every message (hi, questions, anything) in all chats. Add a <strong>Gemini API key</strong> in Settings once, then one click below.</p>
+        <button type="button" class="btn btn-green" style="width:100%;margin-bottom:8px" id="arAutoChatBtn">▶ Start automatic chat</button>
+        <div class="hint mt-4">Same as: Fully automatic + AI + Monitor all chats. Stops with the red button when bot is on.</div>
+      </div>
+
+      <!-- Fully automatic: reply to every message in all chats with AI, no confirmation -->
+      <div class="card mb-10" style="border-color: var(--green, #25D366); background: rgba(37,211,102,.06);">
+        <label class="row align-center gap-8">
+          <input type="checkbox" id="arFullyAuto" class="checkbox">
+          <span class="label" style="margin:0;font-weight:700">🟢 Fully automatic</span>
+        </label>
+        <div class="hint mt-4">No template needed — AI replies to every message. Optional: use keyword filter or template mode below if you want.</div>
+      </div>
+
       <!-- Mode selector -->
       <div class="mode-tabs">
         <button class="mode-tab active" data-mode="template">📝 Template</button>
@@ -437,8 +473,8 @@
       <!-- AI mode -->
       <div id="arAIMode" class="form-group" style="display:none">
         <label class="label">AI Persona / Instructions</label>
-        <textarea id="arPrompt" class="textarea" rows="4" placeholder="You are a helpful assistant. Reply naturally and briefly to the message below."></textarea>
-        <div class="hint mt-4">Claude generates a unique reply to each message. Needs API key.</div>
+        <textarea id="arPrompt" class="textarea" rows="4" placeholder="Leave empty for default: answer questions, reply to greetings, be friendly and brief. Or write custom instructions (e.g. 'You are a support agent. Answer briefly.')"></textarea>
+        <div class="hint mt-4">Replies to every incoming message with AI. Add <strong>Gemini (free)</strong> or Claude API key in Settings, then click Save.</div>
       </div>
 
       <!-- Delay slider -->
@@ -454,11 +490,29 @@
         <input type="text" id="arKeyword" placeholder="hi, hello, help  ← leave empty to reply to all" class="input">
         <div class="hint mt-4">Comma-separated — only replies if message contains any keyword</div>
       </div>
+      <div class="form-group">
+        <label class="label">When no keyword matches</label>
+        <label class="row align-center gap-8 mt-4">
+          <input type="checkbox" id="arNoKeywordUseAI" class="checkbox">
+          <span class="label" style="margin:0">Use AI to reply (understands questions, answers with context)</span>
+        </label>
+        <input type="text" id="arNoKeywordReply" placeholder="Or fixed reply: e.g. How can I help you? (if AI unchecked)" class="input mt-4">
+        <div class="hint mt-4">If keyword filter is set and message has no keyword: use AI brain above, or send the fixed text</div>
+      </div>
+
+      <!-- Per-chat: monitor all chats -->
+      <div class="form-group">
+        <label class="row align-center gap-8">
+          <input type="checkbox" id="arPerChat" class="checkbox">
+          <span class="label" style="margin:0">Monitor all chats (per-chat)</span>
+        </label>
+        <div class="hint mt-4">Reply in every conversation with new messages, not only the open chat. Bot opens unread chats every 6s and replies.</div>
+      </div>
 
       <button class="btn btn-green" style="width:100%;margin-bottom:8px" id="arStartBtn">▶ Start Bot</button>
       <button class="btn btn-danger" style="width:100%;display:none;margin-bottom:8px" id="arStopBtn">⏹ Stop Bot</button>
 
-      <div class="warn-box">⚠️ Keep a WhatsApp Web chat open — bot monitors the active conversation</div>
+      <div class="warn-box" id="arWarnBox">⚠️ Keep a WhatsApp Web chat open — bot monitors the active conversation</div>
 
       <div class="divider-line mt-14 mb-10"></div>
 
@@ -604,17 +658,99 @@
     </div>
 
     <!-- ════════════════════════════════════════════════
+         DATA REPORT TAB (Excel/CSV → Power BI-style analysis)
+         ════════════════════════════════════════════════ -->
+    <div class="panel" id="panel-report">
+      <div class="section-badge mb-6">📈 Data Report</div>
+      <p class="hint mb-8">Upload a CSV or Excel file. Get a Power BI–style report: summary stats, column analysis, and charts.</p>
+      <div class="card p-8 mb-10">
+        <div class="report-upload" id="reportUploadBox">
+          <div class="report-upload-icon">📁</div>
+          <div class="report-upload-text">Drop CSV or Excel here, or click to choose</div>
+          <input type="file" id="reportFileInput" accept=".csv,.xlsx,.xls" hidden>
+        </div>
+        <div class="hint mt-4">Supports .csv and .xlsx (Excel). For .xlsx, open in Excel and Save As CSV if report fails.</div>
+      </div>
+      <div id="reportOutput" class="report-output">
+        <div class="empty-state">Upload a file to see the report.</div>
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════════
+         TASKS TAB (with notifications)
+         ════════════════════════════════════════════════ -->
+    <div class="panel" id="panel-tasks">
+      <div class="section-badge mb-6">✅ Task Manager</div>
+      <p class="hint mb-8">Tasks sync with WhatsApp Web. You’ll get a <strong>browser notification</strong> at the reminder time.</p>
+      <div class="task-sp-tabs row gap-6 mb-8">
+        <button type="button" class="btn btn-outline btn-sm task-sp-nav active" data-task-filter="today">Today</button>
+        <button type="button" class="btn btn-outline btn-sm task-sp-nav" data-task-filter="tomorrow">Tomorrow</button>
+        <button type="button" class="btn btn-outline btn-sm task-sp-nav" data-task-filter="later">Later</button>
+        <button type="button" class="btn btn-outline btn-sm task-sp-nav" data-task-filter="done">Done</button>
+      </div>
+      <div id="task-sp-list" class="card-list task-sp-list">
+        <div class="empty-state">No tasks. Add one below.</div>
+      </div>
+      <div class="task-sp-add mt-10">
+        <button type="button" class="btn btn-outline btn-sm mb-6" id="task-sp-addBtn">+ Add task</button>
+        <div class="task-sp-form card p-8" id="task-sp-form" style="display:none">
+          <input type="text" id="task-sp-title" class="input mb-4" placeholder="Task name" maxlength="200">
+          <input type="text" id="task-sp-desc" class="input mb-4" placeholder="Description (optional)">
+          <div class="row gap-6 mb-4">
+            <label class="row align-center gap-4"><input type="radio" name="task-sp-date" value="today" checked> Today</label>
+            <label class="row align-center gap-4"><input type="radio" name="task-sp-date" value="tomorrow"> Tomorrow</label>
+            <label class="row align-center gap-4"><input type="radio" name="task-sp-date" value="custom"> Date:</label>
+            <input type="date" id="task-sp-date-custom" class="input" style="width:140px">
+          </div>
+          <div class="row align-center gap-6 mb-4">
+            <span>⏰ Remind at</span>
+            <input type="time" id="task-sp-time" class="input" style="width:120px" title="Optional reminder time">
+            <span class="muted-text" style="font-size:11px">Leave empty for no notification</span>
+          </div>
+          <div class="row align-center gap-6 mb-4">
+            <span>Priority</span>
+            <select id="task-sp-priority" class="input" style="width:100px">
+              <option value="low">Low</option>
+              <option value="medium" selected>Medium</option>
+              <option value="high">High</option>
+            </select>
+          </div>
+          <div class="row gap-6">
+            <button type="button" class="btn btn-green btn-sm" id="task-sp-save">Save task</button>
+            <button type="button" class="btn btn-outline btn-sm" id="task-sp-cancel">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════════
          SETTINGS TAB
          ════════════════════════════════════════════════ -->
     <div class="panel" id="panel-settings">
 
       <div class="form-group">
-        <label class="label">Claude API Key</label>
+        <label class="label">AI for Auto Reply &amp; Messages</label>
+        <select id="aiProvider" class="input mb-4" style="max-width:280px">
+          <option value="gemini">Google Gemini (free)</option>
+          <option value="anthropic">Claude (Anthropic, paid)</option>
+        </select>
+        <div class="hint mb-4">Gemini has a free tier at Google AI Studio. Use it for auto-reply and AI suggestions.</div>
+      </div>
+      <div class="form-group" id="wrapGeminiKey">
+        <label class="label">Google Gemini API Key <span style="font-weight:400;color:#25D366">(free)</span></label>
+        <div class="row gap-6 mb-6">
+          <input type="password" id="geminiApiKey" placeholder="AIza..." class="input">
+          <button class="btn btn-outline btn-sm" id="toggleGeminiKey">Show</button>
+        </div>
+        <div class="hint mb-8">Get a free key at <a class="green-link" href="https://aistudio.google.com/apikey" target="_blank">aistudio.google.com/apikey</a></div>
+      </div>
+      <div class="form-group" id="wrapClaudeKey">
+        <label class="label">Claude API Key <span style="font-weight:400;color:#8696a0">(paid)</span></label>
         <div class="row gap-6 mb-6">
           <input type="password" id="apiKey" placeholder="sk-ant-api03-..." class="input">
           <button class="btn btn-outline btn-sm" id="toggleKey">Show</button>
         </div>
-        <div class="hint mb-8">For AI features. Get yours at <a class="green-link" id="anthropicLink" href="#">console.anthropic.com</a></div>
+        <div class="hint mb-8">Get yours at <a class="green-link" id="anthropicLink" href="#">console.anthropic.com</a></div>
         <button class="btn btn-outline btn-sm" id="testKey">Test API Key</button>
         <div id="keyResult" class="result-msg mt-6" style="display:none"></div>
       </div>

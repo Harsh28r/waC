@@ -81,6 +81,18 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .input::placeholder{color:#484f58}
 select.input{cursor:pointer}
 
+/* ── Country picker (flag + dial, short scrollable list) ─────────────────────── */
+.country-picker-wrap{position:relative;min-width:88px;max-width:100px;flex-shrink:0}
+.country-picker-box{display:flex;align-items:center;justify-content:space-between;gap:4px;padding:6px 8px;background:#161b22;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:12px;cursor:pointer;outline:none;transition:border-color .15s}
+.country-picker-box:focus{border-color:#25D366}
+.country-picker-value{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:2.2em;font-size:13px}
+.country-picker-arrow{font-size:10px;color:#8b949e;flex-shrink:0}
+.country-picker-list{display:none;position:absolute;top:100%;left:0;right:0;margin-top:2px;background:#161b22;border:1px solid #30363d;border-radius:6px;max-height:200px;overflow-y:auto;z-index:100;box-shadow:0 8px 24px rgba(0,0,0,.4)}
+.country-picker-list.open{display:block}
+.country-flag-img{width:20px;height:14px;object-fit:cover;border-radius:2px;vertical-align:middle;flex-shrink:0}
+.country-picker-option{padding:6px 10px;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:8px;transition:background .1s}
+.country-picker-option:hover{background:#21262d}
+
 .textarea{width:100%;padding:9px 10px;background:#161b22;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;outline:none;resize:vertical;font-family:inherit;line-height:1.55;transition:border-color .15s}
 .textarea:focus{border-color:#25D366}
 .textarea::placeholder{color:#484f58}
@@ -139,6 +151,14 @@ select.input{cursor:pointer}
 
 /* ── Card ──────────────────────────────────────────────────────── */
 .card{background:#161b22;border:1px solid #21262d;border-radius:8px;padding:12px}
+.label-optional{font-weight:400;text-transform:none;color:#8b949e}
+.compose-attach-card,.compose-template-card{padding:14px;margin-bottom:14px}
+.compose-attach-card{border-color:#30363d}
+.compose-template-card{border-color:#30363d}
+.compose-media-preview{margin-top:10px;padding:10px;background:#0d1117;border-radius:6px;border:1px solid #21262d}
+.compose-preview-img{max-width:100%;max-height:140px;border-radius:6px;object-fit:contain;display:block}
+.compose-video-label{font-size:12px;color:#8b949e;padding:6px 0}
+.compose-textarea{min-height:100px}
 .ai-status{font-size:11px;color:#8b949e;margin-top:8px;min-height:14px}
 
 /* ── Toggle ────────────────────────────────────────────────────── */
@@ -492,6 +512,36 @@ code{background:#21262d;padding:1px 5px;border-radius:3px;font-family:'SF Mono',
 .pin-btn{background:none;border:none;cursor:pointer;padding:2px 4px;border-radius:4px;font-size:14px;line-height:1;transition:opacity .15s;flex-shrink:0;opacity:.25}
 .pin-btn:hover{opacity:.75}
 .pin-btn.pinned{opacity:1}
+
+/* ── Tasks tab ─────────────────────────────────────────────────── */
+.task-sp-tabs .task-sp-nav.active{background:rgba(37,211,102,.15);border-color:#25D366;color:#25D366}
+.task-sp-list .task-sp-item{transition:background .15s}
+.task-sp-list .task-sp-item:hover{background:#161b22}
+.task-sp-title.done{text-decoration:line-through;opacity:.7}
+.task-prio-high{color:#f85149;font-weight:600}
+.task-prio-low{color:#8b949e}
+.flex-1{flex:1}
+.min-w-0{min-width:0}
+.text-11{font-size:11px}
+.text-12{font-size:12px}
+.align-center{align-items:center}
+
+/* ── Data Report tab ───────────────────────────────────────────── */
+.report-upload{border:2px dashed #30363d;border-radius:12px;padding:24px;text-align:center;cursor:pointer;transition:all .2s;background:#161b22}
+.report-upload:hover,.report-upload.drag-over{border-color:#25D366;background:rgba(37,211,102,.06)}
+.report-upload-icon{font-size:32px;margin-bottom:8px}
+.report-upload-text{color:#8b949e;font-size:13px}
+.report-output{margin-top:12px}
+.report-summary .report-card{min-width:100px}
+.report-card-value{font-size:22px;font-weight:700;color:#25D366}
+.report-card-label{font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px;margin-top:4px}
+.report-column{background:#161b22;border:1px solid #21262d}
+.report-bar-wrap{height:8px;background:#21262d;border-radius:4px;overflow:hidden}
+.report-bar{height:100%;background:linear-gradient(90deg,#25D366,#3b82f6);border-radius:4px;transition:width .3s}
+.report-bars .report-bar-row{display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:12px}
+.report-bar-label{min-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#c9d1d9}
+.report-bar-row .report-bar-wrap{flex:1;max-width:200px}
+.report-bar-count{color:#8b949e;font-size:11px}
 
 /* ── Scrollbar ─────────────────────────────────────────────────── */
 ::-webkit-scrollbar{width:4px}
