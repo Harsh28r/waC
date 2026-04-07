@@ -44,7 +44,7 @@ const plans = [
       'DNC list, stealth mode',
       'Priority support',
     ],
-    cta: 'Start Pro Trial',
+    cta: 'Start 14-day Pro trial',
     ctaClass: 'btn btn-primary btn-lg',
   },
 ];
@@ -109,7 +109,7 @@ export default function Pricing() {
       <div className="section-label" style={{ justifyContent: 'center', margin: '0 auto 14px' }}>💎 Pricing</div>
       <h2 className="section-title">Simple, feature-based pricing</h2>
       <p className="section-sub" style={{ margin: '0 auto' }}>
-        Start free. Upgrade to Pro for AI, drip, CRM, and integrations. Cancel anytime.
+        Start free. Get 14 days of Pro at no cost, then $12/mo. Cancel anytime.
       </p>
 
       <div className="pricing-cards">

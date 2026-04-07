@@ -3,6 +3,9 @@
 // ─── Selectors ────────────────────────────────────────────────────────────────
 const SEL = {
   sendButton: [
+    '[data-icon="wds-ic-send-filled"]',
+    'div[aria-label="Send"]',
+    '[aria-label="Send"]',
     'button[data-testid="compose-btn-send"]',
     '[data-testid="compose-btn-send"]',
     'button[aria-label="Send"]',
@@ -33,12 +36,28 @@ const SEL = {
   qrCode: ['canvas[aria-label]', '[data-testid="qrcode"]'],
   invalidDialog: ['[data-animate-modal-popup]', '[data-testid="popup-contents"]'],
   attachBtn: [
-    'footer [data-testid="clip"]',
+    '#main footer div[title="Attach"]',
+    '#main footer span[title="Attach"]',
+    '#main footer [data-testid="attach-menu-plus"]',
+    '#main footer [title="Attach"]',
+    '#main footer [aria-label="Attach"]',
+    'div[title="Attach"]',
+    'span[title="Attach"]',
+    '#main footer span[data-icon="attach-menu-plus"]',
     'footer [data-testid="attach-menu-plus"]',
+    '[data-testid="attach-menu-plus"]',
+    '#main footer [data-testid="clip"]',
+    'footer [data-testid="clip"]',
+    'footer span[data-icon="clip"]',
     'footer span[data-icon="attach-menu-plus"]',
     '[data-testid="clip"]',
     '[data-testid="attach-menu-plus"]',
-    'span[data-icon="attach-menu-plus"]'
+    'span[data-icon="clip"]',
+    'span[data-icon="attach-menu-plus"]',
+    '#main footer [data-testid="clip"]',
+    '#main footer span[data-icon="clip"]',
+    '[title="Attach"]',
+    '[aria-label="Attach"]'
   ],
   imageInput: 'input[accept="image/*,video/mp4,video/3gpp,video/quicktime"]',
   captionInput: [
@@ -126,6 +145,58 @@ async function waitForElIncludingShadow(selectors, timeout = 12000) {
   return null;
 }
 
+/** All file inputs (light DOM + shadow roots) — for picking the gallery input vs sticker input */
+function collectAllFileInputs() {
+  const out = [];
+  const walk = (node) => {
+    if (!node) return;
+    if (node.tagName === 'INPUT' && node.type === 'file') out.push(node);
+    const kids = node.children ? Array.from(node.children) : [];
+    for (const k of kids) walk(k);
+    if (node.shadowRoot) walk(node.shadowRoot);
+  };
+  walk(document.body || document.documentElement);
+  return out;
+}
+
+/**
+ * WhatsApp has separate file inputs: "Photos & videos" includes video/* mimes; sticker flows often don't.
+ * Picking the first matching input was routing uploads through the sticker pipeline.
+ */
+function pickGalleryFileInput(inputs) {
+  const scoreInp = (inp) => {
+    const a = (inp.accept || '').toLowerCase();
+    const ctx = (
+      (inp.closest('[data-testid]')?.getAttribute('data-testid') || '') +
+      (inp.getAttribute('aria-label') || '') +
+      (inp.id || '') +
+      (inp.name || '')
+    ).toLowerCase();
+    if (/sticker/.test(ctx)) return -1000;
+    if (/video\/(mp4|3gpp|quicktime)/.test(a) && /image/.test(a)) return 500;
+    if (a.includes('image/*') && a.includes('video')) return 450;
+    if (inp.hasAttribute('multiple') && /image/.test(a) && /video/.test(a)) return 400;
+    if (inp.hasAttribute('multiple') && /image/.test(a)) return 55;
+    if (/webp/.test(a) && !/video/.test(a) && !a.includes('image/*')) return -80;
+    if (a.includes('image/*')) return 60;
+    return 0;
+  };
+  let best = null;
+  let bestS = -99999;
+  for (const inp of inputs) {
+    const s = scoreInp(inp);
+    if (s > bestS) { bestS = s; best = inp; }
+  }
+  if (best && bestS >= 50) return best;
+  const exact = document.querySelector(SEL.imageInput);
+  if (exact && scoreInp(exact) > -500) return exact;
+  if (best && bestS > 0) return best;
+  // WA sometimes uses empty/minimal accept on the real gallery input — still prefer non-sticker
+  if (best && bestS > -200) return best;
+  const nonSticker = inputs.filter(i => scoreInp(i) > -200);
+  return nonSticker[0] || inputs[0] || null;
+}
+
 // ─── Click Send ───────────────────────────────────────────────────────────────
 async function clickSend() {
   if (findEl(SEL.qrCode)) return { success: false, error: 'WA Web not logged in — scan QR first' };
@@ -135,7 +206,7 @@ async function clickSend() {
     const dialog = findEl(SEL.invalidDialog);
     if (dialog) {
       const t = dialog.textContent.toLowerCase();
-      if (t.includes('invalid') || t.includes('not') || t.includes('error')) {
+      if (t.includes('invalid') || t.includes('not') || t.includes('error') || t.includes('available')) {
         const btn = dialog.querySelector('button');
         if (btn) btn.click();
         return { success: false, error: 'Phone not on WhatsApp or invalid number' };
@@ -143,6 +214,8 @@ async function clickSend() {
     }
 
     const sendBtn =
+      document.querySelector('footer [data-icon="wds-ic-send-filled"]') ||
+      document.querySelector('footer [aria-label="Send"]') ||
       document.querySelector('footer._ak1i button[data-testid="compose-btn-send"]') ||
       document.querySelector('footer._ak1i button[aria-label="Send"]') ||
       document.querySelector('footer._ak1i span[data-icon="send"]') ||
@@ -291,15 +364,68 @@ async function insertMessageText(el, text) {
 // ─── Send Image or Video from base64 data with caption ───────────────────────
 const WA_MEDIA_DEBUG = true; // set false to silence
 function _mediaLog(...a) { if (WA_MEDIA_DEBUG) console.warn('[WA-MEDIA]', ...a); }
+async function _storeMediaError(err) { try { await chrome.storage.local.set({ lastMediaError: String(err) }); } catch (_) {} }
+
+/** Pass huge base64 to main-world <script> via shared DOM — embedding in script text breaks Chrome (size / parse). */
+const WA_B64_HOLDER_ID = '__wa_ext_media_b64_hold';
+function _waPutB64InDom(b64) {
+  let el = document.getElementById(WA_B64_HOLDER_ID);
+  if (!el) {
+    el = document.createElement('textarea');
+    el.id = WA_B64_HOLDER_ID;
+    el.setAttribute('autocomplete', 'off');
+    el.setAttribute('aria-hidden', 'true');
+    el.style.cssText = 'position:fixed;left:-9999px;top:0;width:4px;height:4px;opacity:0;pointer-events:none;border:0;padding:0';
+    (document.documentElement || document.body).appendChild(el);
+  }
+  el.value = b64 || '';
+}
+
+function _findSendInOpenMediaDialog() {
+  for (const d of document.querySelectorAll('[role="dialog"]')) {
+    const btn = d.querySelector('[aria-label="Send"][role="button"], div[aria-label="Send"][role="button"], button[aria-label="Send"], [data-testid="compose-btn-send"], span[data-icon="wds-ic-send-filled"]');
+    if (btn && (btn.offsetParent || btn.getClientRects?.().length)) return btn;
+  }
+  return null;
+}
+
+async function _waitForMediaOrComposeSend(timeout = 10000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeout) {
+    const inDialog = _findSendInOpenMediaDialog();
+    if (inDialog) return inDialog;
+    const fb = findElIncludingShadow(SEL.sendButton);
+    if (fb) return fb;
+    await sleep(200);
+  }
+  return null;
+}
+
+/** Page MAIN world via background `chrome.scripting` — WhatsApp CSP blocks inline `<script>` from content scripts. */
+function waPageMain(method, args) {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage(
+      { type: 'WA_PAGE_MAIN_EXEC', method, payload: { args: args || [] } },
+      (r) => {
+        if (chrome.runtime.lastError) resolve({ error: chrome.runtime.lastError.message });
+        else resolve(r != null ? r : { error: 'no response' });
+      }
+    );
+  });
+}
 
 async function sendImageWithCaption(imageData, imageMime, imageName, caption) {
   _mediaLog('sendImageWithCaption start, dataLen:', (imageData || '').length);
   if (findEl(SEL.qrCode)) return { success: false, error: 'WA Web not logged in — scan QR first' };
 
   const header = await waitForEl(['#main header', '#main [data-testid="conversation-header"]'], 12000);
-  if (!header) { _mediaLog('FAIL: chat header not found'); return { success: false, error: 'Chat did not open' }; }
+  if (!header) { const e = 'Chat did not open'; console.error('[WA-MEDIA] FAIL:', e); _storeMediaError(e); return { success: false, error: e }; }
   _mediaLog('chat open');
   await sleep(800);
+
+  const footer = await waitForElIncludingShadow(['#main footer', 'footer', '[data-testid="conversation-panel-footer"]'], 8000);
+  if (!footer) { _mediaLog('WARN: footer not found, continuing anyway'); }
+  await sleep(500);
 
   const mime = imageMime || 'image/jpeg';
   const isVideo = mime.startsWith('video/');
@@ -307,84 +433,232 @@ async function sendImageWithCaption(imageData, imageMime, imageName, caption) {
 
   const commaIdx = (imageData || '').indexOf(',');
   const base64 = commaIdx >= 0 ? (imageData || '').slice(commaIdx + 1).trim() : (imageData || '').trim();
-  if (!base64) return { success: false, error: 'Invalid media data' };
+  if (!base64) { const e = 'Invalid media data'; console.error('[WA-MEDIA] FAIL:', e); _storeMediaError(e); return { success: false, error: e }; }
   let binary;
-  try { binary = atob(base64.replace(/\s/g, '')); } catch (e) { _mediaLog('FAIL: atob', e); return { success: false, error: 'Invalid file data' }; }
+  try { binary = atob(base64.replace(/\s/g, '')); } catch (e) { const err = 'Invalid file data'; console.error('[WA-MEDIA] FAIL:', err, e); _storeMediaError(err); return { success: false, error: err }; }
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   const file = new File([new Blob([bytes], { type: mime })], defaultName, { type: mime });
   _mediaLog('file created', defaultName, file.size, 'bytes');
 
-  const attachBtn = findEl(SEL.attachBtn);
-  if (!attachBtn) { _mediaLog('FAIL: attach button not found'); return { success: false, error: 'Attach button not found' }; }
-  _mediaLog('attach btn found, clicking');
-  attachBtn.click();
-  await sleep(1200);
+  const _checkMediaPreview = () => !!(
+    // WA Web 2025 media editor — confirmed selectors from live DOM
+    document.querySelector('[aria-label="Remove attachment"]') ||     // X on thumbnail (unique to editor)
+    document.querySelector('button[title="Outline"]') ||              // editing toolbar (unique to editor)
+    document.querySelector('span[data-icon="scissors"]') ||           // Outline tool icon
+    document.querySelector('[aria-label*="thumbnail"]') ||            // "Image thumbnail, item 1 of 1"
+    document.querySelector('[aria-label*="Image thumbnail"]') ||
+    document.querySelector('[aria-label*="Video thumbnail"]') ||
+    // Legacy / older WA Web builds
+    document.querySelector('[data-testid="media-caption-input-container"]') ||
+    document.querySelector('[data-testid="image-clip"]') ||
+    document.querySelector('[data-testid="media-upload-preview"]') ||
+    document.querySelector('[data-testid="media-editor"]') ||
+    document.querySelector('[data-testid="photo-editor"]') ||
+    document.querySelector('[data-testid="media-lightbox-input"]') ||
+    document.querySelector('[data-testid="media-panel"]') ||
+    document.querySelector('#main footer img[src^="blob:"]') ||
+    document.querySelector('footer video') ||
+    document.querySelector('[data-testid="media-canvas"]') ||
+    document.querySelector('[data-testid="media-preview"]') ||
+    document.querySelector('[data-testid="media-upload-modal"]') ||
+    document.querySelector('[data-testid="media-attachment-preview"]') ||
+    document.querySelector('div[role="dialog"] img[src^="blob:"]') ||
+    document.querySelector('[data-testid="img-or-video-thumb"]')
+  );
 
-  const acceptImageOrVideo = (el) => el.type === 'file' && (!el.accept || /image|video/.test(el.accept));
-  const findFileInput = () => {
-    const inDrawer = (sel) => { const d = document.querySelector(sel); return d ? d.querySelector('input[type="file"]') : null; };
-    return findInDocumentAndShadowRoots(el => el.tagName === 'INPUT' && acceptImageOrVideo(el)) ||
-      document.querySelector(SEL.imageInput) ||
-      document.querySelector('footer input[accept*="image"]') ||
-      document.querySelector('footer input[accept*="video"]') ||
-      inDrawer('[data-testid="drawer-right"]') || inDrawer('[role="dialog"]') || inDrawer('[class*="drawer"]') ||
-      document.querySelector('#main input[accept*="image"]') ||
-      document.querySelector('#main input[accept*="video"]') ||
-      document.querySelector('input[accept*="image"]') ||
-      document.querySelector('input[accept*="video"]') ||
-      findInDocumentAndShadowRoots(el => el.tagName === 'INPUT' && el.type === 'file') ||
-      document.querySelector('#main input[type="file"]') ||
-      document.querySelector('input[type="file"]');
-  };
-  let fileInput = findFileInput();
-  for (let i = 0; !fileInput && i < 8; i++) {
-    await sleep(400);
-    fileInput = findFileInput();
-  }
-  if (!fileInput) { _mediaLog('FAIL: file input not found'); return { success: false, error: 'File input not found — try again' }; }
-  _mediaLog('file input found, setting files');
+  // PRIMARY: Paperclip → Photos & videos → file input.
+  // Do NOT paste into compose or set random hidden file inputs — WA Web often sends those as stickers / inline images.
+  let sendBtn = _checkMediaPreview() ? findElIncludingShadow(SEL.sendButton) : null;
+  if (!sendBtn) {
+    let attachBtn = findEl(SEL.attachBtn) || findElIncludingShadow(SEL.attachBtn);
+    if (attachBtn) {
+      _mediaLog('attach btn found');
+      // Patch + MutationObserver BEFORE opening menu so new <input type=file> from Photo is suppressed in time
+      {
+        const pr = await waPageMain('patchFileInputs', []);
+        _mediaLog('patch file inputs:', JSON.stringify(pr));
+      }
+      attachBtn.click();
+      await sleep(2000);
 
-  fileInput.focus?.();
-  fileInput.value = '';
-  const dt = new DataTransfer();
-  dt.items.add(file);
-  fileInput.files = dt.files;
-  fileInput.dispatchEvent(new Event('change', { bubbles: true }));
-  fileInput.dispatchEvent(new Event('input', { bubbles: true }));
-  await sleep(500);
-  fileInput.dispatchEvent(new Event('change', { bubbles: true }));
-  await sleep(isVideo ? 5000 : 3000);
-
-  // Step 3: Wait for media preview (caption area or send button)
-  const captionSelectors = [
-    '[data-testid="media-caption-input-container"] div[contenteditable="true"]',
-    'div[contenteditable="true"][data-tab="11"]',
-    '#main div[contenteditable="true"]'
-  ];
-  let captionEl = null;
-  for (const sel of captionSelectors) {
-    captionEl = document.querySelector(sel);
-    if (captionEl && captionEl.closest('#main')) break;
-  }
-  if (!captionEl) await sleep(2000);
-
-  if (caption && String(caption).trim()) {
-    captionEl = captionEl || document.querySelector('[data-testid="media-caption-input-container"] div[contenteditable]') || document.querySelector('div[contenteditable][data-tab="11"]');
-    if (captionEl) {
-      captionEl.focus();
-      await sleep(400);
-      await insertMessageText(captionEl, String(caption).trim());
+      // Step 2: Click Photo/Video menu item — WA Web's handler calls input.click() → suppressed
+      const menuRoots = [document.querySelector('[data-testid="drawer-right"]'), document.querySelector('[data-testid="drawer-left"]'), document.querySelector('[data-animate-drawer-right]'), document.querySelector('[role="menu"]'), document.querySelector('[role="dialog"]'), footer].filter(Boolean);
+      const searchRoot = menuRoots[0] || document;
+      let photoBtn = searchRoot.querySelector('[data-icon="image"]') || searchRoot.querySelector('[data-icon="attach-image"]') || searchRoot.querySelector('[data-icon="gallery"]') || searchRoot.querySelector('[data-icon="photos"]') || searchRoot.querySelector('[data-icon="photo"]') || searchRoot.querySelector('[data-icon="photo-video"]') || searchRoot.querySelector('[data-testid="mi-attach-image"]') || searchRoot.querySelector('[data-testid="attach-photo"]');
+      if (photoBtn) {
+        const row = photoBtn.closest('li,[role="menuitem"],div[role="button"]');
+        if (row && /sticker/i.test((row.textContent || '').slice(0, 80))) {
+          _mediaLog('icon matched but row is Sticker — skip');
+          photoBtn = null;
+        }
+      }
+      if (photoBtn) {
+        (photoBtn.closest('li') || photoBtn.closest('[role="menuitem"]') || photoBtn.closest('div[role="button"]') || photoBtn).click();
+        await sleep(1200);
+      } else {
+        const candidates = searchRoot.querySelectorAll('span[dir="auto"], [role="menuitem"], [data-testid="menu-item"], li span');
+        for (const el of candidates) {
+          const t = (el.textContent || '').trim().toLowerCase();
+          if (/sticker/.test(t)) continue;
+          if (/photos?|image|gallery|videos?/i.test(t) && t.length < 40 && el.offsetParent) {
+            const btn = el.closest('li') || el.closest('[role="menuitem"]') || el.closest('div[role="button"]') || el;
+            if (btn) { btn.click(); await sleep(1200); break; }
+          }
+        }
+      }
       await sleep(500);
-    }
+
+      // Step 3: MAIN world file inject via chrome.scripting (see wa-page-main.js) + DOM holder for base64
+      let s2result = {};
+      for (let inj = 0; inj < 15; inj++) {
+        _waPutB64InDom(base64);
+        s2result = await waPageMain('galleryInject', [mime, defaultName]);
+        if (s2result && s2result.ok) break;
+        await sleep(400);
+      }
+      _mediaLog('gallery inject result:', JSON.stringify(s2result));
+      if (s2result && s2result.ok) {
+        await sleep(isVideo ? 5500 : 3500);
+      } else {
+        console.warn('[WA-MEDIA] gallery inject failed — will try drag-drop:', s2result);
+      }
+    } else { const e = 'Attach button not found'; console.error('[WA-MEDIA] FAIL:', e); _storeMediaError(e); return { success: false, error: e }; }
   }
 
-  const sendBtn = await waitForElIncludingShadow(SEL.sendButton, 12000);
-  if (!sendBtn) { _mediaLog('FAIL: send button not found after media attach'); return { success: false, error: 'Send button not found — is media preview open?' }; }
-  _mediaLog('send btn found, clicking');
-  sendBtn.click();
-  await sleep(1500);
-  _mediaLog('done');
+  // Fallback: drag-drop onto chat panel — video always; image only if preview still closed (attach+inject ok but UI slow)
+  if (!_checkMediaPreview()) {
+    _mediaLog('FALLBACK: main-world drag-drop');
+    _waPutB64InDom(base64);
+    const ddResult = await waPageMain('dragDrop', [mime, defaultName]);
+    _mediaLog('drag-drop result:', JSON.stringify(ddResult));
+    await sleep(isVideo ? 5000 : 4000);
+  }
+
+  // Wait up to 6s for media preview to render before checking
+  if (!_checkMediaPreview()) {
+    for (let _mpi = 0; _mpi < 20; _mpi++) { await sleep(300); if (_checkMediaPreview()) break; }
+  }
+  sendBtn = sendBtn || await _waitForMediaOrComposeSend(10000);
+  if (!sendBtn) { const e = 'Send button not found — media preview did not open'; console.error('[WA-MEDIA] FAIL:', e); _storeMediaError(e); return { success: false, error: e }; }
+
+  // CRITICAL: Only proceed if we're in MEDIA preview — NOT the regular compose.
+  const inMediaPreview = _checkMediaPreview();
+  if (!inMediaPreview) {
+    const e = 'Image attach failed — media preview did not open. Try again.';
+    console.error('[WA-MEDIA] FAIL:', e);
+    _storeMediaError(e);
+    return { success: false, error: e };
+  }
+
+  // Find caption input — must be inside the media editor, NOT the footer compose box
+  // data-tab="10" is the main compose box in footer — avoid it to prevent text going to wrong element
+  const _findCaptionEl = () => {
+    // Prefer scoped search within the media editor dialog
+    const mediaRoot =
+      document.querySelector('[aria-label="Remove attachment"]')?.closest('[role="dialog"]') ||
+      document.querySelector('[aria-label*="Image thumbnail"]')?.closest('[role="dialog"]') ||
+      document.querySelector('[aria-label*="Video thumbnail"]')?.closest('[role="dialog"]') ||
+      document.querySelector('[data-testid="media-caption-input-container"]')?.parentElement ||
+      null;
+    if (mediaRoot) {
+      const el = mediaRoot.querySelector('div[contenteditable]');
+      if (el) return el;
+    }
+    // Fallback: named caption container
+    const named = document.querySelector('[data-testid="media-caption-input-container"] div[contenteditable]') ||
+      document.querySelector('div[contenteditable][data-tab="11"]');
+    if (named) return named;
+    // Last resort: data-tab="10" only if it's NOT inside footer (media editor reuses tab 10)
+    const t10 = document.querySelector('div[contenteditable][data-tab="10"]');
+    if (t10 && !t10.closest('footer')) return t10;
+    return null;
+  };
+  if (caption && String(caption).trim()) {
+    const captionText = String(caption).trim();
+    _mediaLog('inserting caption:', captionText.slice(0, 50));
+
+    // Wait up to 2s for caption input to appear (it may render slightly after media preview)
+    let captionInserted = false;
+    for (let _ci = 0; _ci < 10 && !captionInserted; _ci++) {
+      await sleep(200);
+      const res = await waPageMain('insertCaption', [captionText]);
+      _mediaLog('caption insert attempt', _ci, JSON.stringify(res));
+      if (res?.found && res?.inserted) { captionInserted = true; break; }
+    }
+
+    // Fallback: content-script execCommand if main-world failed
+    if (!captionInserted) {
+      _mediaLog('main-world caption failed, trying content-script execCommand');
+      const captionEl = _findCaptionEl();
+      if (captionEl) {
+        captionEl.focus();
+        await sleep(300);
+        document.execCommand('selectAll', false, null);
+        document.execCommand('insertText', false, captionText);
+        captionInserted = !!(captionEl.innerText || captionEl.textContent || '').trim();
+        _mediaLog('content-script caption result, inserted:', captionInserted);
+      }
+    }
+
+    if (!captionInserted) _mediaLog('WARN: could not insert caption — image will send without text');
+    await sleep(300);
+  }
+
+  // If WA opened "send as sticker" / sticker tools, turn that off so it goes out as normal media
+  await waPageMain('stickerOff', []);
+  await sleep(400);
+
+  // ── Multi-method send: try every approach until preview closes ──
+  // Method 1: Enter key on the caption element (most reliable in WA media preview)
+  _mediaLog('send method 1: Enter key on caption');
+  const _pressEnterOn = async (el) => {
+    if (!el) return;
+    el.focus();
+    await sleep(150);
+    ['keydown','keypress','keyup'].forEach(t =>
+      el.dispatchEvent(new KeyboardEvent(t, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }))
+    );
+  };
+  // Try Enter from main world first (most reliable for Lexical editor)
+  await waPageMain('sendEnterCap', []);
+  await sleep(1200);
+  if (!_checkMediaPreview()) { _mediaLog('sent via main-world Enter key'); return { success: true }; }
+  // Fallback: content-script Enter
+  const captionFocusEl = _findCaptionEl();
+  await _pressEnterOn(captionFocusEl);
+  await sleep(1200);
+  if (!_checkMediaPreview()) { _mediaLog('sent via content-script Enter key'); return { success: true }; }
+
+  // Method 2: Click send button from main world (React's own context)
+  // Based on live WA Web 2025 DOM: send button is div[role="button"][aria-label="Send"]
+  _mediaLog('send method 2: main-world send button click');
+  await waPageMain('clickSend', []);
+  await sleep(1200);
+  if (!_checkMediaPreview()) { _mediaLog('sent via main-world click'); return { success: true }; }
+
+  // Method 3: Enter key from main world on caption
+  _mediaLog('send method 3: main-world Enter key');
+  await waPageMain('sendEnterCap2', []);
+  await sleep(1200);
+  if (!_checkMediaPreview()) { _mediaLog('sent via main-world Enter'); return { success: true }; }
+
+  // Method 4: Content-script click fallback — media dialog first
+  _mediaLog('send method 4: content-script send button click');
+  const finalSendBtn = _findSendInOpenMediaDialog() || await waitForElIncludingShadow(SEL.sendButton, 5000);
+  if (finalSendBtn) {
+    finalSendBtn.click();
+    await sleep(1500);
+    if (!_checkMediaPreview()) { _mediaLog('sent via content-script click'); return { success: true }; }
+  }
+
+  if (_checkMediaPreview()) {
+    const e = 'Media preview still open — send not confirmed';
+    console.error('[WA-MEDIA] FAIL:', e);
+    _storeMediaError(e);
+    return { success: false, error: e };
+  }
+  _mediaLog('media preview closed — send likely ok');
   return { success: true };
 }
 
@@ -3531,12 +3805,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     (async () => {
       let imageData = msg.imageData, imageMime = msg.imageMime, imageName = msg.imageName, caption = msg.caption;
       if (msg.imageKey) {
-        const stored = await chrome.storage.session.get(msg.imageKey);
-        const p = stored[msg.imageKey];
-        if (p) { imageData = p.imageData; imageMime = p.imageMime; imageName = p.imageName; caption = p.caption ?? caption; }
+        try {
+          const stored = await chrome.storage.session.get(msg.imageKey);
+          const p = stored?.[msg.imageKey];
+          if (p?.imageData) {
+            imageData = p.imageData;
+            imageMime = p.imageMime || imageMime;
+            imageName = p.imageName || imageName;
+            caption = p.caption != null ? p.caption : caption;
+          }
+        } catch (_) { /* use inline msg.imageData if present */ }
       }
-      if (!imageData) return sendResponse({ success: false, error: 'No image data (check session storage)' });
-      sendResponse(await sendImageWithCaption(imageData, imageMime, imageName, caption));
+      if (!imageData) return sendResponse({ success: false, error: 'No image data — session empty; reload extension and retry' });
+      sendResponse(await sendImageWithCaption(imageData, imageMime, imageName, caption || ''));
     })().catch(e => sendResponse({ success: false, error: e.message }));
     return true;
   }
@@ -3545,10 +3826,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     (async () => {
       const nav = await openChatByPhone(msg.phone);
       if (!nav.success) return sendResponse(nav);
-      if (msg.imageData) {
-        sendResponse(await sendImageWithCaption(msg.imageData, msg.imageMime, msg.imageName, msg.caption));
+      let imageData = msg.imageData, imageMime = msg.imageMime, imageName = msg.imageName, caption = msg.caption;
+      if (msg.imageKey) {
+        try {
+          const stored = await chrome.storage.session.get(msg.imageKey);
+          const p = stored?.[msg.imageKey];
+          if (p) { imageData = p.imageData; imageMime = p.imageMime; imageName = p.imageName; caption = p.caption ?? msg.message ?? caption; }
+        } catch (_) { /* session storage unavailable in this context — use inline imageData from message */ }
+      }
+      if (imageData) {
+        sendResponse(await sendImageWithCaption(imageData, imageMime, imageName, caption || msg.message || ''));
       } else {
-        const ok = await typeAndSend(msg.message);
+        const ok = await typeAndSend(msg.message || '');
         sendResponse({ success: !!ok });
       }
     })().catch(e => sendResponse({ success: false, error: e.message }));

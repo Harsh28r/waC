@@ -20,24 +20,27 @@
     <div class="header-right">
       <button class="privacy-btn" id="privacyBtn" title="Toggle Privacy Mode">👁️</button>
       <div class="status-pill" id="statusPill">● Idle</div>
+      <a href="https://wabulkai.com/#pricing" target="_blank" class="plan-pill" id="planPill" title="Plan & upgrade">Free</a>
+      <button class="close-panel-btn" id="closePanelBtn" title="Close dashboard">×</button>
     </div>
   </div>
 
-  <!-- ── Tab Bar ──────────────────────────────────────────────── -->
+  <!-- ── Tab Bar: Phase 1 = Contacts, Sender, Tasks, Settings. Rest = data-phase="2" ── -->
   <div class="tab-bar">
     <button class="tab active" data-tab="contacts">📋 Contacts</button>
-    <button class="tab" data-tab="pipeline">🎯 Pipeline</button>
-    <button class="tab" data-tab="compose">✍️ Compose</button>
     <button class="tab" data-tab="sender">⚡ Sender</button>
-    <button class="tab" data-tab="drip">📩 Drip</button>
-    <button class="tab" data-tab="auto">🤖 Auto Reply</button>
-    <button class="tab" data-tab="replies">💬 Replies</button>
-    <button class="tab" data-tab="analytics">📊 Stats</button>
-    <button class="tab" data-tab="dashboard">📋 Dashboard</button>
-    <button class="tab" data-tab="report">📈 Data Report</button>
     <button class="tab" data-tab="tasks">✅ Tasks</button>
     <button class="tab" data-tab="settings">⚙️ Settings</button>
+    <button class="tab" data-tab="pipeline" data-phase="2">🎯 Pipeline</button>
+    <button class="tab" data-tab="compose" data-phase="2">✍️ Compose</button>
+    <button class="tab" data-tab="drip" data-phase="2">📩 Drip</button>
+    <button class="tab" data-tab="auto" data-phase="2">🤖 Auto Reply</button>
+    <button class="tab" data-tab="replies" data-phase="2">💬 Replies</button>
+    <button class="tab" data-tab="analytics" data-phase="2">📊 Stats</button>
+    <button class="tab" data-tab="dashboard" data-phase="2">📋 Dashboard</button>
+    <button class="tab" data-tab="report" data-phase="2">📈 Data Report</button>
   </div>
+  <div class="phase1-teaser" id="phase1Teaser" style="display:none">Bulk campaigns, Drip, AI Reply &amp; more — coming in next update.</div>
 
   <!-- ── Metrics strip (visible on all tabs) ───────────────────── -->
   <div class="metrics-strip" id="metricsStrip">
@@ -69,9 +72,9 @@
 
       <div class="upload-box" id="uploadBox">
         <div class="upload-icon">📂</div>
-        <div class="upload-title">Drop CSV file here</div>
-        <div class="upload-hint">Columns: <code>phone</code>, <code>name</code>, any custom fields</div>
-        <input type="file" id="csvFile" accept=".csv" hidden>
+        <div class="upload-title">Drop CSV or Excel file here</div>
+        <div class="upload-hint">Columns: <code>phone</code>, <code>name</code>, any custom fields. Supports .csv, .xlsx, .xls</div>
+        <input type="file" id="csvFile" accept=".csv,.xlsx,.xls" hidden>
         <button class="btn btn-outline btn-sm" id="chooseFileBtn">Choose File</button>
       </div>
 
@@ -150,7 +153,7 @@
     <!-- ════════════════════════════════════════════════
          PIPELINE TAB
          ════════════════════════════════════════════════ -->
-    <div class="panel" id="panel-pipeline">
+    <div class="panel" id="panel-pipeline" data-phase="2">
 
       <!-- Summary boxes -->
       <div class="pipeline-summary" id="pipelineSummary">
@@ -183,7 +186,7 @@
     <!-- ════════════════════════════════════════════════
          COMPOSE TAB
          ════════════════════════════════════════════════ -->
-    <div class="panel" id="panel-compose">
+    <div class="panel" id="panel-compose" data-phase="2">
 
       <!-- Campaign Name -->
       <div class="form-group">
@@ -205,6 +208,8 @@
           <img id="imagePreviewImg" class="compose-preview-img" alt="Preview" style="display:none">
           <div id="videoPreviewLabel" class="compose-video-label" style="display:none">🎬 Video: <span id="videoFileName"></span></div>
         </div>
+        <p class="hint mt-4" style="font-size:10px;opacity:0.8">If media fails: 1) Open the <strong>WhatsApp Web tab</strong> (web.whatsapp.com), 2) F12 → Console → filter <code>WA-MEDIA</code>. Last error appears below.</p>
+        <div id="lastMediaError" class="hint mt-2" style="font-size:11px;color:#f85149;display:none;max-height:60px;overflow:auto"></div>
       </div>
 
       <!-- Message Template -->
@@ -253,14 +258,11 @@
         <div class="ai-status" id="aiStatus"></div>
       </div>
 
-      <!-- Delay -->
+      <!-- Delay (user sets manually — fixed, not random) -->
       <div class="form-group">
-        <label class="label">Delay Between Messages</label>
-        <div class="row gap-10 mb-6">
-          <div style="flex:1"><div class="label-sm">Min (sec)</div><input type="number" id="minDelay" value="15" min="5" max="300" class="input"></div>
-          <div style="flex:1"><div class="label-sm">Max (sec)</div><input type="number" id="maxDelay" value="45" min="10" max="600" class="input"></div>
-        </div>
-        <div class="warn-box">⚠️ Keep 15–45s minimum to avoid WhatsApp bans</div>
+        <label class="label">Delay Between Messages (sec)</label>
+        <input type="number" id="minDelay" value="20" min="5" max="300" class="input" style="width:80px" title="You set this — fixed delay, not random">
+        <div class="hint mt-2">Manual: you choose the exact seconds between each send. Keep 15–45s to avoid bans.</div>
       </div>
 
       <!-- Schedule Campaign -->
@@ -308,6 +310,17 @@
         </div>
       </div>
 
+      <!-- Quick Send image attach (uses shared campaignImageData) -->
+      <div class="form-group">
+        <label class="label">🖼 Attach Image/Video (optional)</label>
+        <input type="file" id="qs-imageFile" accept="image/*,video/mp4,video/3gpp,video/quicktime" style="display:none">
+        <div class="row gap-6 align-center">
+          <button class="btn btn-outline btn-sm" type="button" id="qs-imagePickBtn">Choose File</button>
+          <span class="muted-text" id="qs-imageFileName">No file</span>
+          <button class="btn btn-outline btn-sm" type="button" id="qs-imageClearBtn" style="display:none">✕</button>
+        </div>
+      </div>
+
       <!-- AI rewrite for quick send -->
       <div class="card mb-10">
         <div class="row gap-8 align-center">
@@ -329,11 +342,25 @@
 
       <!-- Bulk number sender -->
       <div class="section-badge">📋 Multi-Number Quick Blast</div>
-      <p class="hint mb-10">Send same message to multiple numbers at once (no CSV needed)</p>
+      <p class="hint mb-6">Send same message to multiple numbers. Use imported CSV contacts or paste numbers below.</p>
+      <div class="row gap-6 mb-8 align-center">
+        <button class="btn btn-green btn-sm" id="qs-blastFromCsvBtn">📂 Blast to CSV contacts</button>
+        <span class="muted-text" id="qs-blastCsvCount">0 contacts</span>
+      </div>
 
       <div class="form-group">
-        <label class="label">Phone Numbers</label>
-        <textarea id="qs-phones" class="textarea" rows="4" placeholder="One number per line (country code + number, 10–15 digits):&#10;919876543210&#10;12125551234&#10;447700900123"></textarea>
+        <label class="label">Or paste phone numbers here</label>
+        <textarea id="qs-phones" class="textarea" rows="4" placeholder="Flexible formats — one per line or comma-separated:&#10;9876543210, 91 9876543210, +91-98765-43210&#10;123 456 7890, 123-456-7890"></textarea>
+        <div class="row gap-8 align-center mt-4">
+          <span class="label-sm">Default country for 10-digit numbers:</span>
+          <div id="qs-blast-country-wrap" class="country-picker-wrap"><input type="hidden" id="qs-blast-country" value="91"></div>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="label">Delay between each message (sec)</label>
+        <input type="number" id="qs-blast-delay" class="input" value="20" min="5" max="300" style="width:80px" title="You set this — fixed delay, not random">
+        <div class="hint mt-2">Manual: you choose the exact seconds between each send</div>
       </div>
 
       <div class="form-group">
@@ -371,7 +398,7 @@
     <!-- ════════════════════════════════════════════════
          DRIP CAMPAIGNS TAB
          ════════════════════════════════════════════════ -->
-    <div class="panel" id="panel-drip">
+    <div class="panel" id="panel-drip" data-phase="2">
 
       <div class="section-badge">📩 Drip Campaigns</div>
       <p class="hint mb-12">Automate multi-step message sequences. Each step fires at its scheduled delay after enrollment.</p>
@@ -419,7 +446,7 @@
     <!-- ════════════════════════════════════════════════
          AUTO REPLY TAB
          ════════════════════════════════════════════════ -->
-    <div class="panel" id="panel-auto">
+    <div class="panel" id="panel-auto" data-phase="2">
 
       <div class="section-badge">🤖 Auto Reply Bot</div>
       <p class="hint mb-10">Automatically replies to incoming messages in the open WhatsApp chat.</p>
@@ -530,7 +557,7 @@
     <!-- ════════════════════════════════════════════════
          REPLIES TAB (AI Reply Handler)
          ════════════════════════════════════════════════ -->
-    <div class="panel" id="panel-replies">
+    <div class="panel" id="panel-replies" data-phase="2">
 
       <div class="row justify-between align-center mb-10">
         <div>
@@ -554,7 +581,7 @@
     <!-- ════════════════════════════════════════════════
          ANALYTICS TAB
          ════════════════════════════════════════════════ -->
-    <div class="panel" id="panel-analytics">
+    <div class="panel" id="panel-analytics" data-phase="2">
 
       <!-- Charts -->
       <div class="section-title mb-6">📈 7-Day Activity</div>
@@ -637,7 +664,7 @@
     <!-- ════════════════════════════════════════════════
          DASHBOARD TAB
          ════════════════════════════════════════════════ -->
-    <div class="panel" id="panel-dashboard">
+    <div class="panel" id="panel-dashboard" data-phase="2">
 
       <div class="row justify-between align-center mb-10">
         <div class="section-badge">📋 Campaign Dashboard</div>
@@ -660,7 +687,7 @@
     <!-- ════════════════════════════════════════════════
          DATA REPORT TAB (Excel/CSV → Power BI-style analysis)
          ════════════════════════════════════════════════ -->
-    <div class="panel" id="panel-report">
+    <div class="panel" id="panel-report" data-phase="2">
       <div class="section-badge mb-6">📈 Data Report</div>
       <p class="hint mb-8">Upload a CSV or Excel file. Get a Power BI–style report: summary stats, column analysis, and charts.</p>
       <div class="card p-8 mb-10">
@@ -934,8 +961,8 @@
 
   </div><!-- /panels -->
 
-  <!-- ── Campaign Controls ─────────────────────────────────────── -->
-  <div class="controls">
+  <!-- ── Campaign Controls (Phase 2) ─────────────────────────────────────── -->
+  <div class="controls" data-phase="2">
     <div id="progressArea" style="display:none">
       <div class="progress-label" id="progressLabel">Preparing...</div>
       <div class="progress-track">
@@ -953,6 +980,7 @@
   </div>
 
 </div><!-- /app -->
+<script src="../libs/xlsx.min.js"></script>
 <script src="sidepanel.js"></script>
 </body>
 </html>

@@ -1,5 +1,8 @@
 // sidepanel.js — WA Bulk AI v2.0
 
+// Set to false when you're ready to show all features (Phase 2).
+const PHASE1_ONLY = false;
+
 // ─── State ────────────────────────────────────────────────────────────────────
 let contacts    = [];
 let results     = [];
@@ -61,13 +64,46 @@ function getFullPhoneFromCountryAndNumber(countryCode, numberOnly) {
 const PHONE_MIN = 10;
 const PHONE_MAX = 15;
 
+/** Normalize phone to digits-only — no spaces, no +. WhatsApp needs digits only. */
+function normalizePhoneToDigits(val) {
+  if (val == null) return '';
+  const s = typeof val === 'number' ? (Number.isInteger(val) && val >= 1e9 ? String(val) : String(Math.round(val))) : String(val);
+  return s.replace(/[^0-9]/g, '');
+}
+
+/** Parse phones from blast textarea: newlines, commas, semicolons. 10 digits → prepend default CC. */
+function parsePhonesForBlast(raw, defaultCC = '91') {
+  const tokens = raw.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
+  const phones = [];
+  for (const t of tokens) {
+    let digits = t.replace(/[^0-9+]/g, '');
+    if (digits.startsWith('+')) digits = digits.slice(1);
+    if (!digits) continue;
+    if (digits.length === 10) digits = (defaultCC || '91').replace(/\D/g, '') + digits;
+    if (digits.length >= 10) phones.push(digits);
+  }
+  return [...new Set(phones)];
+}
+
+/** Normalize phone to digits-only (no + or spaces) — always use before storing or sending */
+function normalizePhone(phone) {
+  return (phone || '').replace(/\D/g, '');
+}
+
 function validatePhone(phone) {
-  const digits = (phone || '').replace(/[^0-9]/g, '');
+  const digits = normalizePhone(phone);
   if (!digits.length) return { valid: false, error: 'Enter a phone number with country code' };
   if (digits.length < PHONE_MIN) return { valid: false, error: `Include country code (min ${PHONE_MIN} digits, e.g. 91 for India)` };
   if (digits.length > PHONE_MAX) return { valid: false, error: `Number too long (max ${PHONE_MAX} digits)` };
   if (digits.startsWith('0')) return { valid: false, error: 'Use country code instead of leading 0 (e.g. 91… not 0…)' };
   return { valid: true };
+}
+
+// ─── Phase 1 only: hide Phase 2 tabs/panels so user sees only Contacts, Sender, Tasks, Settings ──
+if (typeof PHASE1_ONLY !== 'undefined' && PHASE1_ONLY) {
+  document.body.classList.add('phase1-only');
+  const teaser = document.getElementById('phase1Teaser');
+  if (teaser) teaser.style.display = 'block';
 }
 
 // ─── Privacy Mode ─────────────────────────────────────────────────────────────
@@ -80,6 +116,8 @@ chrome.storage.local.get('privacyOn', d => {
 });
 
 privacyBtn.addEventListener('click', () => setPrivacy(!privacyOn));
+
+document.getElementById('closePanelBtn')?.addEventListener('click', () => window.close());
 
 // Keyboard shortcut: Ctrl+Shift+H to toggle privacy instantly
 document.addEventListener('keydown', e => {
@@ -177,17 +215,32 @@ function initCountryPicker(wrapId, hiddenId, defaultCode = '91', flagUrls = {}) 
 }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
+function renderPlanBadge() {
+  chrome.runtime.sendMessage({ type: 'GET_LICENSE' }, (lic) => {
+    if (chrome.runtime.lastError || !lic) return;
+    const el = document.getElementById('planPill');
+    if (!el) return;
+    if (lic.plan === 'pro') { el.textContent = 'Pro'; el.className = 'plan-pill pro'; }
+    else if (lic.plan === 'trial' && lic.trialDaysLeft) { el.textContent = `Trial · ${lic.trialDaysLeft}d`; el.className = 'plan-pill trial'; }
+    else { el.textContent = 'Free'; el.className = 'plan-pill'; }
+  });
+}
+
 chrome.storage.local.get(['contacts','settings','results','replies','pinnedChats'], (d) => {
   if (d.contacts)    { contacts    = d.contacts.map(c => crmDefaults(c)); renderContacts(); }
   if (d.settings)    { settings    = { ...settings, ...d.settings }; applySettings(); }
   if (d.results)     { results     = d.results;  renderLastResults(); }
   if (d.replies)     { replies     = d.replies;  renderReplies(); }
   if (d.pinnedChats) { pinnedChats = d.pinnedChats; renderPinnedChats(); }
+  renderPlanBadge();
+  if (typeof updateLastMediaErrorDisplay === 'function') updateLastMediaErrorDisplay();
   chrome.runtime.sendMessage({ type: 'GET_FLAG_URLS' }, (flagUrls) => {
     const urls = flagUrls || {};
     initCountryPicker('manualCountry-wrap', 'manualCountry', '91', urls);
     initCountryPicker('pin-country-wrap', 'pin-country', '91', urls);
     initCountryPicker('qs-country-wrap', 'qs-country', '91', urls);
+    initCountryPicker('qs-blast-country-wrap', 'qs-blast-country', '91', urls);
+    initCountryPicker('qs-blast-country-wrap', 'qs-blast-country', '91', urls);
   });
 });
 
@@ -510,9 +563,59 @@ uploadBox.addEventListener('drop', e => {
 });
 
 function readFile(f) {
+  const name = (f.name || '').toLowerCase();
+  if (name.endsWith('.xlsx') || name.endsWith('.xls')) {
+    const r = new FileReader();
+    r.onload = e => {
+      const ab = e.target.result;
+      if (typeof XLSX === 'undefined') return showToast('Excel support loading… try again or use CSV', 'err');
+      try {
+        const wb = XLSX.read(ab, { type: 'array' });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const aoa = XLSX.utils.sheet_to_json(ws, { header: 1 });
+        if (!aoa || aoa.length < 2) return showToast('Excel needs at least 2 rows', 'err');
+        const headers = aoa[0].map(h => String(h || '').trim().toLowerCase());
+        const rows = aoa.slice(1).map(row => {
+          const obj = {};
+          headers.forEach((h, i) => { obj[h] = row[i] != null ? String(row[i]).trim() : ''; });
+          return obj;
+        });
+        importFromRows(headers, rows);
+      } catch (err) {
+        console.warn(err);
+        showToast('Could not read Excel — save as CSV and try again', 'err');
+      }
+    };
+    r.readAsArrayBuffer(f);
+    return;
+  }
   const r = new FileReader();
   r.onload = e => importCSV(e.target.result);
   r.readAsText(f);
+}
+
+function importFromRows(headers, rows) {
+  const phoneKey = headers.find(h => ['phone','phonenumber','mobile','number','tel'].includes(h));
+  if (!phoneKey) return showToast('File must have a "phone" column', 'err');
+  const defaultCc = (document.getElementById('manualCountry')?.value || '91').replace(/\D/g, '');
+  const added = [];
+  let skipped = 0;
+  for (const c of rows) {
+    let digits = normalizePhoneToDigits(c[phoneKey]);
+    if (!digits) continue;
+    if (digits.length === 10) {
+      const rawVal = String(c[phoneKey] || '').trim();
+      if (!rawVal.startsWith('+')) digits = defaultCc + digits;
+    }
+    if (digits.length < 10) { skipped++; continue; }
+    const phone = digits;
+    const contact = { ...c, phone, name: c.name || c.Name || phone, status: 'pending' };
+    added.push(crmDefaults(contact));
+  }
+  if (!added.length) return showToast(`No valid phone numbers (need 10+ digits). ${skipped ? `Skipped ${skipped} invalid.` : ''}`, 'err');
+  contacts = [...contacts, ...added];
+  saveContacts(); renderContacts(); updatePreviewPicker();
+  showToast(`✓ Added ${added.length} contacts`);
 }
 
 function importCSV(text) {
@@ -522,23 +625,27 @@ function importCSV(text) {
   const phoneKey = headers.find(h => ['phone','phonenumber','mobile','number','tel'].includes(h));
   if (!phoneKey) return showToast('CSV must have a "phone" column', 'err');
 
+  const defaultCc = (document.getElementById('manualCountry')?.value || '91').replace(/\D/g, '');
   const added = [];
+  let skipped = 0;
   for (let i = 1; i < lines.length; i++) {
     if (!lines[i].trim()) continue;
     const vals = splitCSVLine(lines[i]);
     const c = {};
     headers.forEach((h, idx) => c[h] = (vals[idx] || '').trim());
-    const phone = (c[phoneKey] || '').replace(/[^0-9+]/g, '');
-    if (!phone) continue;
-    c.phone = phone;
-    if (!c.name) c.name = phone;
+    let digits = normalizePhoneToDigits(c[phoneKey]);
+    if (!digits) continue;
+    if (digits.length === 10 && !(c[phoneKey] || '').trim().startsWith('+')) digits = defaultCc + digits;
+    if (digits.length < 10) { skipped++; continue; }
+    c.phone = digits;
+    if (!c.name) c.name = digits;
     c.status = 'pending';
     added.push(crmDefaults(c));
   }
 
   contacts = [...contacts, ...added];
   saveContacts(); renderContacts(); updatePreviewPicker();
-  showToast(`✓ Added ${added.length} contacts`);
+  showToast(skipped ? `✓ Added ${added.length} (skipped ${skipped} invalid)` : `✓ Added ${added.length} contacts`);
 }
 
 function splitCSVLine(line) {
@@ -740,6 +847,8 @@ document.getElementById('pin-phone').addEventListener('keydown', e => {
 
 function renderContacts() {
   document.getElementById('contactCount').textContent = `${contacts.length} contact${contacts.length !== 1 ? 's' : ''}`;
+  const csvCountEl = document.getElementById('qs-blastCsvCount');
+  if (csvCountEl) csvCountEl.textContent = `${contacts.length} contacts`;
   const list = document.getElementById('contactList');
   if (!contacts.length) { list.innerHTML = '<div class="empty-state">No contacts yet.<br>Upload a CSV or add one manually.</div>'; return; }
   list.innerHTML = contacts.map((c, i) => contactCardHTML(crmDefaults(c), i)).join('');
@@ -1006,15 +1115,20 @@ document.getElementById('scheduleBtn').addEventListener('click', () => {
   if (!contacts.length) return showResult('scheduleResult', '⛔ Add contacts first', 'err');
   if (!template)        return showResult('scheduleResult', '⛔ Write a message template first', 'err');
 
-  const minD = parseInt(document.getElementById('minDelay').value) || 15;
-  const maxD = parseInt(document.getElementById('maxDelay').value) || 45;
+  const delaySec = parseInt(document.getElementById('minDelay')?.value) || 15;
 
   const scheduleCampaignName = document.getElementById('campaignName')?.value?.trim() || '';
   chrome.runtime.sendMessage({
     type: 'SCHEDULE_CAMPAIGN',
     data: {
       timestamp: ts,
-      campaignData: { contacts, template, templateB, abEnabled, settings: { ...settings, minDelay: minD, maxDelay: maxD, campaignName: scheduleCampaignName } }
+      campaignData: {
+        contacts, template, templateB, abEnabled,
+        imageUrl: campaignImageData || null,
+        imageMime: campaignImageMime || 'image/jpeg',
+        imageName: campaignImageName || 'image.jpg',
+        settings: { ...settings, minDelay: delaySec, maxDelay: delaySec, campaignName: scheduleCampaignName }
+      }
     }
   }, resp => {
     if (resp?.success) showResult('scheduleResult', `✓ Scheduled for ${new Date(ts).toLocaleString()}`, 'ok');
@@ -1027,6 +1141,29 @@ document.getElementById('qs-message').addEventListener('input', e => {
   document.getElementById('qs-charcount').textContent = `${e.target.value.length} chars`;
 });
 
+// Quick Sender image picker (shares campaignImageData with Compose)
+document.getElementById('qs-imagePickBtn')?.addEventListener('click', () => document.getElementById('qs-imageFile')?.click());
+document.getElementById('qs-imageFile')?.addEventListener('change', e => {
+  const f = e.target.files?.[0];
+  if (!f) return;
+  const isVideo = (f.type || '').startsWith('video/');
+  const r = new FileReader();
+  r.onload = ev => {
+    campaignImageData = ev.target.result;
+    campaignImageName = f.name;
+    campaignImageMime = f.type || (isVideo ? 'video/mp4' : 'image/jpeg');
+    document.getElementById('qs-imageFileName').textContent = f.name;
+    document.getElementById('qs-imageClearBtn').style.display = '';
+  };
+  r.readAsDataURL(f);
+});
+document.getElementById('qs-imageClearBtn')?.addEventListener('click', () => {
+  campaignImageData = campaignImageName = campaignImageMime = null;
+  document.getElementById('qs-imageFile').value = '';
+  document.getElementById('qs-imageFileName').textContent = 'No file';
+  document.getElementById('qs-imageClearBtn').style.display = 'none';
+});
+
 document.getElementById('qs-sendBtn').addEventListener('click', async () => {
   const cc      = (document.getElementById('qs-country')?.value || '91').replace(/\D/g, '');
   const number  = document.getElementById('qs-phone').value.trim().replace(/\D/g, '');
@@ -1034,7 +1171,10 @@ document.getElementById('qs-sendBtn').addEventListener('click', async () => {
   const message = document.getElementById('qs-message').value.trim();
   const v = validatePhone(phone);
   if (!v.valid) return showResult('qs-result', '⛔ ' + v.error, 'err');
-  if (!message) return showResult('qs-result', '⛔ Enter a message', 'err');
+  // Allow image-only (caption from Compose) or text-only
+  let imageUrl = campaignImageData || document.getElementById('imagePreviewImg')?.src;
+  if (imageUrl && !imageUrl.startsWith('data:')) imageUrl = null;
+  if (!message && !imageUrl) return showResult('qs-result', '⛔ Enter a message or attach image in Compose tab', 'err');
 
   const btn = document.getElementById('qs-sendBtn');
   btn.disabled = true; btn.textContent = '⏳ Sending...';
@@ -1043,48 +1183,99 @@ document.getElementById('qs-sendBtn').addEventListener('click', async () => {
   let finalMsg = message;
   const aiOn = document.getElementById('qs-aiEnabled').checked;
   const qsAiKey = (settings.aiProvider === 'gemini' ? settings.geminiApiKey : settings.apiKey) || '';
-  if (aiOn && qsAiKey) {
+  if (aiOn && qsAiKey && message) {
     showResult('qs-result', '🤖 AI rewriting message...', 'info');
     const r = await new Promise(res => chrome.runtime.sendMessage({ type: 'GENERATE_AI_REPLY', data: { replyText: message, contactName: phone, apiKey: qsAiKey, provider: settings.aiProvider || 'gemini' } }, res));
     if (r) finalMsg = r;
   }
 
-  chrome.runtime.sendMessage({ type: 'QUICK_SEND', data: { phone, message: finalMsg, stealthMode: settings.stealthMode } }, resp => {
+  chrome.runtime.sendMessage({ type: 'QUICK_SEND', data: { phone, message: finalMsg || '', imageUrl: imageUrl || null, imageMime: campaignImageMime || 'image/jpeg', imageName: campaignImageName || 'image.jpg', stealthMode: settings.stealthMode } }, resp => {
     btn.disabled = false; btn.textContent = '⚡ Send Now';
     if (resp?.success) {
       showResult('qs-result', '✓ Message sent!', 'ok');
       document.getElementById('qs-phone').value = document.getElementById('qs-message').value = '';
+      if (imageUrl) { campaignImageData = campaignImageName = campaignImageMime = null; document.getElementById('qs-imageFileName').textContent = 'No file'; document.getElementById('qs-imageClearBtn').style.display = 'none'; document.getElementById('qs-imageFile').value = ''; }
     } else {
       showResult('qs-result', '⛔ ' + (resp?.error || 'Send failed'), 'err');
     }
   });
 });
 
-// Multi-number blast
+// Parse phones for blast: flexible formats — newline, comma, semicolon; 10-digit gets default country
+function parsePhonesForBlast(raw, defaultCountry = '91') {
+  const cc = (defaultCountry || '91').replace(/\D/g, '');
+  const tokens = raw.split(/[\n,;]+/).map(t => t.trim().replace(/[^0-9+]/g, '')).filter(Boolean);
+  const phones = [];
+  for (const t of tokens) {
+    let digits = t.replace(/^\+/, '').replace(/\D/g, '');
+    if (digits.length === 10 && !t.startsWith('+')) digits = cc + digits;
+    if (digits.length >= 10) phones.push(digits);
+  }
+  return [...new Set(phones)];
+}
+
+// Blast to CSV contacts — single handler: upload CSV → Quick Blast → send to all
+document.getElementById('qs-blastFromCsvBtn')?.addEventListener('click', () => {
+  const msg = document.getElementById('qs-blast-msg').value.trim();
+  if (!contacts.length) return showResult('qs-blast-result', '⛔ Upload a CSV in Contacts tab first', 'err');
+  if (!msg && !campaignImageData) return showResult('qs-blast-result', '⛔ Enter a message or attach image above', 'err');
+  const blastContacts = contacts.filter(c => (c.phone || '').replace(/\D/g, '').length >= 10).map(c => ({ ...crmDefaults(c), status: 'pending' }));
+  if (!blastContacts.length) return showResult('qs-blast-result', '⛔ No valid phone numbers in imported contacts', 'err');
+  const delaySec = parseInt(document.getElementById('qs-blast-delay')?.value) || 20;
+  const d = Math.max(5, Math.min(300, delaySec));
+  showResult('qs-blast-result', `🚀 Blasting to ${blastContacts.length} CSV contacts (${d}s between each)...`, 'info');
+  chrome.runtime.sendMessage({
+    type: 'START_CAMPAIGN',
+    data: {
+      contacts: blastContacts,
+      template: msg || '',
+      abEnabled: false,
+      imageUrl: campaignImageData || null,
+      imageMime: campaignImageMime || 'image/jpeg',
+      imageName: campaignImageName || 'image.jpg',
+      settings: { ...settings, minDelay: d, maxDelay: d }
+    }
+  }, resp => {
+    if (resp?.success) {
+      isRunning = true; setRunningUI(true);
+      showResult('qs-blast-result', `✓ Blast started for ${blastContacts.length} contacts`, 'ok');
+    } else {
+      showResult('qs-blast-result', '⛔ ' + (resp?.error || 'Failed'), 'err');
+    }
+  });
+});
+
+// Multi-number blast (paste numbers)
 document.getElementById('qs-blastBtn').addEventListener('click', () => {
   const phonesRaw = document.getElementById('qs-phones').value.trim();
   const msg       = document.getElementById('qs-blast-msg').value.trim();
   if (!phonesRaw) return showResult('qs-blast-result', '⛔ Enter phone numbers', 'err');
   if (!msg)       return showResult('qs-blast-result', '⛔ Enter a message', 'err');
 
-  const phones = phonesRaw.split('\n').map(p => p.trim().replace(/[^0-9+]/g, '')).filter(Boolean);
-  if (!phones.length) return showResult('qs-blast-result', '⛔ No valid phone numbers found', 'err');
+  const defaultCc = (document.getElementById('qs-blast-country')?.value || '91').replace(/\D/g, '');
+  const phones = parsePhonesForBlast(phonesRaw, defaultCc);
+  if (!phones.length) return showResult('qs-blast-result', '⛔ No valid phone numbers found (need 10+ digits each)', 'err');
 
   const invalid = phones.filter(p => !validatePhone(p).valid);
-  if (invalid.length) {
-    return showResult('qs-blast-result', `⛔ Invalid (country code required, 10–15 digits): ${invalid.slice(0, 3).join(', ')}${invalid.length > 3 ? '…' : ''}`, 'err');
-  }
+  if (invalid.length) return showResult('qs-blast-result', `⛔ Invalid: ${invalid.slice(0, 3).join(', ')}${invalid.length > 3 ? '…' : ''}`, 'err');
 
-  // Create a mini campaign
   const blastContacts = phones.map(p => ({ name: p, phone: p, status: 'pending' }));
-  const minD = parseInt(document.getElementById('minDelay').value) || 15;
-  const maxD = parseInt(document.getElementById('maxDelay').value) || 45;
+  const delaySec = parseInt(document.getElementById('qs-blast-delay')?.value) || 20;
+  const d = Math.max(5, Math.min(300, delaySec));
 
-  showResult('qs-blast-result', `🚀 Starting blast to ${phones.length} numbers...`, 'info');
+  showResult('qs-blast-result', `🚀 Starting blast to ${phones.length} numbers (${d}s between each)...`, 'info');
 
   chrome.runtime.sendMessage({
     type: 'START_CAMPAIGN',
-    data: { contacts: blastContacts, template: msg, abEnabled: false, settings: { ...settings, minDelay: minD, maxDelay: maxD } }
+    data: {
+      contacts: blastContacts,
+      template: msg,
+      abEnabled: false,
+      imageUrl: campaignImageData || null,
+      imageMime: campaignImageMime || 'image/jpeg',
+      imageName: campaignImageName || 'image.jpg',
+      settings: { ...settings, minDelay: d, maxDelay: d }
+    }
   }, resp => {
     if (resp?.success) {
       isRunning = true; setRunningUI(true);
@@ -1236,8 +1427,10 @@ function applySettings() {
   document.getElementById('apiKey').value        = settings.apiKey      || '';
   document.getElementById('openaiApiKey').value  = settings.groqApiKey || '';
   document.getElementById('aiEnabled').checked   = settings.aiEnabled   || false;
-  document.getElementById('minDelay').value      = settings.minDelay    || 15;
-  document.getElementById('maxDelay').value      = settings.maxDelay    || 45;
+  const delay = settings.minDelay || 15;
+  document.getElementById('minDelay').value = delay;
+  const maxEl = document.getElementById('maxDelay');
+  if (maxEl) maxEl.value = delay;
   document.getElementById('dailyLimit').value    = settings.dailyLimit  || 100;
   document.getElementById('stealthMode').checked = settings.stealthMode || false;
   document.getElementById('autoPrivacy').checked = settings.autoPrivacy || false;
@@ -1334,12 +1527,11 @@ document.getElementById('saveSettingsBtn').addEventListener('click', () => {
   settings.apiKey       = document.getElementById('apiKey').value.trim();
   settings.groqApiKey   = document.getElementById('openaiApiKey').value.trim();
   settings.aiEnabled    = document.getElementById('aiEnabled').checked;
-  settings.minDelay    = parseInt(document.getElementById('minDelay').value)  || 15;
-  settings.maxDelay    = parseInt(document.getElementById('maxDelay').value)  || 45;
+  const delaySec = parseInt(document.getElementById('minDelay')?.value) || 15;
+  settings.minDelay = settings.maxDelay = delaySec;
   settings.dailyLimit  = parseInt(document.getElementById('dailyLimit').value)|| 100;
   settings.stealthMode = document.getElementById('stealthMode').checked;
   settings.autoPrivacy = document.getElementById('autoPrivacy').checked;
-  if (settings.minDelay >= settings.maxDelay) return showResult('saveResult', '⛔ Min delay must be less than Max', 'err');
 
   // Business hours
   const days = [];
@@ -1393,20 +1585,28 @@ function startCampaign() {
   const template  = document.getElementById('msgTemplate').value.trim();
   const templateB = document.getElementById('msgTemplateB').value.trim();
   const abEnabled = document.getElementById('abEnabled').checked;
-  const imageUrl  = campaignImageData || null;
+  // Recover image from preview DOM if state was lost (e.g. tab switch)
+  let imageUrl = campaignImageData || null;
+  if (!imageUrl) {
+    const previewImg = document.getElementById('imagePreviewImg');
+    if (previewImg?.src?.startsWith('data:')) {
+      imageUrl = previewImg.src;
+      const m = imageUrl.match(/^data:([^;]+);/);
+      if (m) campaignImageMime = m[1];
+      if (!campaignImageName) campaignImageName = 'image.jpg';
+    }
+  }
   const imageMime = campaignImageMime || 'image/jpeg';
   const imageName = campaignImageName || 'image.jpg';
 
   if (!contacts.length) return showError('Add contacts first (Contacts tab)');
-  if (!template)        return showError('Write a message template (Compose tab)');
+  if (!template && !imageUrl) return showError('Write a message template (Compose tab) or attach image/video');
   if (abEnabled && !templateB) return showError('Write Message B for A/B testing');
   const campaignAiKey = (settings.aiProvider === 'gemini' ? settings.geminiApiKey : settings.apiKey) || '';
   if (settings.aiEnabled && !campaignAiKey) return showError('Add API key in Settings (Gemini free or Claude)');
 
-  const minD = parseInt(document.getElementById('minDelay').value) || 15;
-  const maxD = parseInt(document.getElementById('maxDelay').value) || 45;
-  if (minD < 5)     return showError('Min delay must be at least 5 seconds');
-  if (maxD <= minD) return showError('Max delay must be greater than Min delay');
+  const delaySec = parseInt(document.getElementById('minDelay')?.value) || 15;
+  if (delaySec < 5) return showError('Delay must be at least 5 seconds');
 
   contacts = contacts.map(c => ({ ...c, status: 'pending' }));
   results = []; saveContacts(); renderContacts(); renderLastResults();
@@ -1421,7 +1621,7 @@ function startCampaign() {
   const campaignName = document.getElementById('campaignName')?.value?.trim() || '';
   chrome.runtime.sendMessage({
     type: 'START_CAMPAIGN',
-    data: { contacts, template, templateB, abEnabled, imageUrl, imageMime, imageName, settings: { ...settings, minDelay: minD, maxDelay: maxD, campaignName } }
+    data: { contacts, template, templateB, abEnabled, imageUrl, imageMime, imageName, settings: { ...settings, minDelay: delaySec, maxDelay: delaySec, campaignName } }
   }, resp => {
     if (chrome.runtime.lastError) { showError('Start failed: ' + chrome.runtime.lastError.message); setRunningUI(false); isRunning = false; }
   });
@@ -1437,8 +1637,19 @@ chrome.runtime.onMessage.addListener(msg => {
   if (msg.type === 'PROGRESS')       handleProgress(msg.data);
   if (msg.type === 'AUTO_REPLY_LOG') addArLogEntry(msg.data);
 });
+function updateLastMediaErrorDisplay() {
+  chrome.storage.local.get('lastMediaError', d => {
+    const el = document.getElementById('lastMediaError');
+    if (!el) return;
+    const txt = d.lastMediaError || '';
+    el.textContent = txt;
+    el.style.display = txt ? 'block' : 'none';
+  });
+}
+
 chrome.storage.onChanged.addListener(changes => {
   if (changes.campaignProgress) handleProgress(changes.campaignProgress.newValue);
+  if (changes.lastMediaError) updateLastMediaErrorDisplay();
   // Sync pins added/removed from the WA Web sidebar pin buttons
   if (changes.pinnedChats) {
     pinnedChats = changes.pinnedChats.newValue || [];
@@ -1474,6 +1685,10 @@ function handleProgress(data) {
     case 'sent':
     case 'failed':
       updateContactStatus(data.phone, data.contact, data.status);
+      if (data.status === 'failed' && data.results?.length) {
+        const last = data.results[data.results.length - 1];
+        if (last?.error) setProgress(`❌ ${data.contact}: ${last.error}`, pct, data.currentIndex+1, data.total);
+      }
       if (data.status === 'sent' && data.phone) {
         const ci = contacts.findIndex(c => c.phone === data.phone);
         if (ci >= 0) {
@@ -1827,9 +2042,23 @@ document.getElementById('arFullyAuto')?.addEventListener('change', e => {
 });
 
 // Toggle checkbox
-document.getElementById('arToggle').addEventListener('change', e => {
-  if (e.target.checked) startAutoReplyBot();
-  else                  stopAutoReplyBot();
+document.getElementById('arToggle').addEventListener('change', async e => {
+  if (!e.target.checked) { stopAutoReplyBot(); return; }
+  const aiEnabled = document.getElementById('aiEnabled')?.checked;
+  if (aiEnabled) {
+    const lic = await new Promise(r => chrome.runtime.sendMessage({ type: 'GET_LICENSE' }, r));
+    if (!lic.canUsePro) {
+      if (!lic.trialUsed) {
+        const started = await new Promise(r => chrome.runtime.sendMessage({ type: 'START_TRIAL' }, r));
+        if (started?.started) { showToast(`Pro trial started — ${started.trialDaysLeft} days left`, 'ok'); renderPlanBadge(); }
+      } else {
+        showToast('AI Auto Reply is a Pro feature. Upgrade at wabulkai.com', 'err');
+        e.target.checked = false;
+        return;
+      }
+    }
+  }
+  startAutoReplyBot();
 });
 
 // Start / Stop buttons
@@ -2268,14 +2497,13 @@ function renderSegments() {
       document.getElementById('seg-blastBtn').addEventListener('click', () => {
         const template = document.getElementById('msgTemplate').value.trim();
         if (!template) { showToast('Write a template in the Compose tab first', 'err'); return; }
-        const minD = parseInt(document.getElementById('minDelay').value) || 15;
-        const maxD = parseInt(document.getElementById('maxDelay').value) || 45;
+        const delaySec = parseInt(document.getElementById('minDelay')?.value) || 15;
         filtered.forEach(c => c.status = 'pending');
         saveContacts();
         isRunning = true; setRunningUI(true); setStatus('Starting', 'running');
         chrome.runtime.sendMessage({
           type: 'START_CAMPAIGN',
-          data: { contacts: filtered, template, abEnabled: false, settings: { ...settings, minDelay: minD, maxDelay: maxD } }
+          data: { contacts: filtered, template, abEnabled: false, settings: { ...settings, minDelay: delaySec, maxDelay: delaySec } }
         }, resp => {
           if (!resp?.success) { showError(resp?.error || 'Failed'); setRunningUI(false); isRunning = false; }
         });

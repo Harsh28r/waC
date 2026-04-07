@@ -107,12 +107,98 @@ async function getFlagUrls() {
   return flagUrls;
 }
 
+// ─── License / Plan (Free vs Pro, 14-day trial) ─────────────────────────────────
+const TRIAL_DAYS = 14;
+async function getLicense() {
+  const { license = {} } = await chrome.storage.local.get('license');
+  const plan = license.plan || 'free';
+  const trialEnd = license.trialEnd || 0;
+  const trialUsed = license.trialUsed || false;
+  const now = Date.now();
+  const inTrial = plan === 'trial' && now < trialEnd;
+  const canUsePro = plan === 'pro' || inTrial;
+  if (plan === 'trial' && now >= trialEnd) {
+    await chrome.storage.local.set({ license: { ...license, plan: 'free', trialUsed: true } });
+    return getLicense();
+  }
+  return {
+    plan: canUsePro ? (plan === 'pro' ? 'pro' : 'trial') : 'free',
+    canUsePro,
+    trialUsed,
+    trialEnd: inTrial ? trialEnd : null,
+    trialDaysLeft: inTrial ? Math.ceil((trialEnd - now) / (24 * 60 * 60 * 1000)) : 0,
+  };
+}
+async function startTrialIfEligible() {
+  const { license = {} } = await chrome.storage.local.get('license');
+  if (license.trialUsed || license.plan === 'pro' || (license.plan === 'trial' && Date.now() < (license.trialEnd || 0)))
+    return { started: false, ...(await getLicense()) };
+  const trialEnd = Date.now() + TRIAL_DAYS * 24 * 60 * 60 * 1000;
+  const next = { plan: 'trial', trialEnd, trialUsed: true };
+  await chrome.storage.local.set({ license: next });
+  return { started: true, ...(await getLicense()) };
+}
+
+// ─── MAIN world on WA tab (CSP blocks content-script inline <script>) ───────────
+async function executeWaPageMain(tabId, method, payload) {
+  const args = (payload && payload.args) || [];
+  let exists = false;
+  try {
+    const chk = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'MAIN',
+      func: () => typeof window.__waBulkPageMain === 'object' && window.__waBulkPageMain != null
+    });
+    exists = !!(chk && chk[0] && chk[0].result === true);
+  } catch (e) {
+    return { error: 'scripting check: ' + e.message };
+  }
+  if (!exists) {
+    try {
+      await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', files: ['wa-page-main.js'] });
+    } catch (e) {
+      return { error: 'load wa-page-main.js: ' + e.message };
+    }
+  }
+  try {
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'MAIN',
+      args: [method, args],
+      func: (method, args) => {
+        const api = window.__waBulkPageMain;
+        if (!api) return { error: 'API missing' };
+        const fn = api[method];
+        if (typeof fn !== 'function') return { error: 'unknown method: ' + String(method) };
+        return fn.apply(api, args);
+      }
+    });
+    return result;
+  } catch (e) {
+    return { error: 'exec: ' + e.message };
+  }
+}
+
 // ─── Message Router ───────────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  console.log('[WA] Message:', msg.type);
+  if (msg.type !== 'WA_PAGE_MAIN_EXEC') console.log('[WA] Message:', msg.type);
+
+  if (msg.type === 'WA_PAGE_MAIN_EXEC') {
+    const tabId = sender.tab && sender.tab.id;
+    if (!tabId) {
+      sendResponse({ error: 'No tab — open web.whatsapp.com' });
+      return false;
+    }
+    executeWaPageMain(tabId, msg.method, msg.payload || {})
+      .then(sendResponse)
+      .catch(e => sendResponse({ error: e.message }));
+    return true;
+  }
 
   // Async handlers — return true so Chrome keeps channel open
   const async_handlers = {
+    GET_LICENSE:         () => getLicense(),
+    START_TRIAL:         () => startTrialIfEligible(),
     GET_FLAG_URLS:       () => getFlagUrls(),
     QUICK_SEND:          () => quickSend(msg.data),
     SCAN_REPLIES:        () => scanReplies(msg.data),
@@ -225,8 +311,11 @@ async function runCampaign(data) {
 
     await broadcastProgress({ status: 'sending', currentIndex: i, total: contacts.length, contact: contact.name || contact.phone, phone: contact.phone, variant, preview: message.substring(0, 60) });
 
-    const result = await sendWhatsAppMessage(waTabId, contact.phone, message, settings.stealthMode, imageUrl || null, imageMime, imageName);
+      const result = await sendWhatsAppMessage(waTabId, contact.phone, message, settings.stealthMode, imageUrl || null, imageMime, imageName);
     console.log('[WA] Result for', contact.phone, ':', result.success, result.error || '');
+    if (imageUrl && !result.success && result.error) {
+      chrome.storage.local.set({ lastMediaError: result.error });
+    }
 
     if (useB) bSent++; else aSent++;
 
@@ -262,8 +351,8 @@ async function runCampaign(data) {
 
 // ─── Quick Send ───────────────────────────────────────────────────────────────
 async function quickSend(data) {
-  const { phone, message, stealthMode } = data;
-  console.log('[WA] Quick send to:', phone);
+  const { phone, message, stealthMode, imageUrl, imageMime, imageName } = data;
+  console.log('[WA] Quick send to:', phone, imageUrl ? '(with image)' : '');
 
   // DNC check
   const dncStored = await chrome.storage.local.get('dnc');
@@ -274,7 +363,10 @@ async function quickSend(data) {
 
   const tabId = await findOrCreateWATab();
   await sleep(1500);
-  const result = await sendWhatsAppMessage(tabId, phone, message, stealthMode || false);
+  const result = await sendWhatsAppMessage(tabId, phone, message || '', stealthMode || false, imageUrl || null, imageMime || 'image/jpeg', imageName || 'image.jpg');
+  if (imageUrl && !result.success && result.error) {
+    chrome.storage.local.set({ lastMediaError: result.error });
+  }
   return result;
 }
 
@@ -524,7 +616,7 @@ async function clearAnalytics() {
   return { success: true };
 }
 
-// ─── WA Tab & Message Sending ─────────────────────────────────────────────────
+// ─── WA Tab & Message Sending (navigate per contact — reliable) ─
 async function sendWhatsAppMessage(tabId, phone, message, stealthMode = false, imageUrl = null, imageMime = 'image/jpeg', imageName = 'image.jpg') {
   try {
     const phoneClean = phone.replace(/[^0-9]/g, '');
@@ -533,23 +625,43 @@ async function sendWhatsAppMessage(tabId, phone, message, stealthMode = false, i
     if (imageUrl) {
       const isVideo = (imageMime || '').startsWith('video/');
       const name = imageName || (isVideo ? 'video.mp4' : 'image.jpg');
-      const payload = { imageData: imageUrl, imageMime, imageName: name, caption: message };
-      await chrome.storage.session.set({ waSendImage: payload });
+      const payload = { imageData: imageUrl, imageMime, imageName: name, caption: message || '' };
+      try {
+        await chrome.storage.session.set({ waSendImage: payload });
+      } catch (e) {
+        return { success: false, error: 'Image too large for session storage (~1MB/item limit). Compress or use a smaller file.' };
+      }
+      await sleep(150);
       const chatUrl = `https://web.whatsapp.com/send?phone=${phoneClean}`;
       await chrome.tabs.update(tabId, { url: chatUrl, active: !stealthMode });
-      await sleep(800);
+      await sleep(1000);
       await waitForTabLoad(tabId);
-      await sleep(5000);
-      const response = await sendMessageToTab(tabId, { type: 'SEND_WITH_IMAGE', imageKey: 'waSendImage' }, 4);
+      await sleep(isVideo ? 9000 : 8000);
+      // Large data URLs break chrome.tabs.sendMessage — content script reads chrome.storage.session only
+      const dataLen = (payload.imageData || '').length;
+      const tabPayload = {
+        type: 'SEND_WITH_IMAGE',
+        imageKey: 'waSendImage',
+        imageMime: payload.imageMime,
+        imageName: payload.imageName,
+        caption: payload.caption
+      };
+      if (dataLen < 120000) tabPayload.imageData = payload.imageData;
+      let response = await sendMessageToTab(tabId, tabPayload, 8);
+      // Fallback: if image failed, send caption as text so user doesn't lose the message
+      if (response && !response.success && payload.caption) {
+        await chrome.tabs.update(tabId, { url: `https://web.whatsapp.com/send?phone=${phoneClean}` });
+        await sleep(2000);
+        response = await sendMessageToTab(tabId, { type: 'TYPE_AND_SEND', message: payload.caption }, 5);
+      }
       return response || { success: false, error: 'No response from WA page — is WA Web logged in?' };
     }
 
-    // Text-only: open chat, then type via content script
     const url = `https://web.whatsapp.com/send?phone=${phoneClean}`;
     await chrome.tabs.update(tabId, { url, active: !stealthMode });
-    await sleep(800); // let navigation start before checking load status
+    await sleep(800);
     await waitForTabLoad(tabId);
-    await sleep(5000); // wait for WA React app to fully initialize
+    await sleep(5000);
     const response = await sendMessageToTab(tabId, { type: 'TYPE_AND_SEND', message }, 5);
     return response || { success: false, error: 'No response from WA page — is WA Web logged in?' };
   } catch (e) {
