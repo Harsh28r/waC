@@ -408,7 +408,11 @@ function waPageMain(method, args) {
       { type: 'WA_PAGE_MAIN_EXEC', method, payload: { args: args || [] } },
       (r) => {
         if (chrome.runtime.lastError) resolve({ error: chrome.runtime.lastError.message });
-        else resolve(r != null ? r : { error: 'no response' });
+        else {
+          const out = r != null ? r : { error: 'no response' };
+          if (out && out.error) _mediaLog('waPageMain', method, out.error);
+          resolve(out);
+        }
       }
     );
   });
@@ -509,12 +513,19 @@ async function sendImageWithCaption(imageData, imageMime, imageName, caption) {
       }
       await sleep(500);
 
-      // Step 3: MAIN world file inject via chrome.scripting (see wa-page-main.js) + DOM holder for base64
+      // Step 3: Try sorted file inputs (pickIndex 0..n) — WA mounts several type=file; only one is gallery.
       let s2result = {};
-      for (let inj = 0; inj < 15; inj++) {
-        _waPutB64InDom(base64);
-        s2result = await waPageMain('galleryInject', [mime, defaultName]);
-        if (s2result && s2result.ok) break;
+      inject: for (let inj = 0; inj < 18; inj++) {
+        for (let pick = 0; pick < 14; pick++) {
+          _waPutB64InDom(base64);
+          s2result = await waPageMain('galleryInject', [mime, defaultName, pick]);
+          if (s2result && s2result.error === 'pickIndex_oob') break;
+          if (s2result && s2result.ok) {
+            await sleep(isVideo ? 1100 : 800);
+            if (_checkMediaPreview()) break inject;
+          }
+        }
+        if (_checkMediaPreview()) break;
         await sleep(400);
       }
       _mediaLog('gallery inject result:', JSON.stringify(s2result));
@@ -523,7 +534,29 @@ async function sendImageWithCaption(imageData, imageMime, imageName, caption) {
       } else {
         console.warn('[WA-MEDIA] gallery inject failed — will try drag-drop:', s2result);
       }
-    } else { const e = 'Attach button not found'; console.error('[WA-MEDIA] FAIL:', e); _storeMediaError(e); return { success: false, error: e }; }
+    } else {
+      _mediaLog('attach button not found, trying direct galleryInject');
+      let s2result = {};
+      inject2: for (let inj = 0; inj < 10; inj++) {
+        for (let pick = 0; pick < 12; pick++) {
+          _waPutB64InDom(base64);
+          s2result = await waPageMain('galleryInject', [mime, defaultName, pick]);
+          if (s2result && s2result.error === 'pickIndex_oob') break;
+          if (s2result && s2result.ok) {
+            await sleep(isVideo ? 1100 : 800);
+            if (_checkMediaPreview()) break inject2;
+          }
+        }
+        if (_checkMediaPreview()) break;
+        await sleep(350);
+      }
+      if (!_checkMediaPreview()) {
+        const e = 'Attach button not found and direct inject failed';
+        console.error('[WA-MEDIA] FAIL:', e, s2result);
+        _storeMediaError(e + (s2result?.error ? `: ${s2result.error}` : ''));
+        return { success: false, error: e };
+      }
+    }
   }
 
   // Fallback: drag-drop onto chat panel — video always; image only if preview still closed (attach+inject ok but UI slow)

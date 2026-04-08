@@ -1010,6 +1010,59 @@ let campaignImageData = null; // base64 data URL
 let campaignImageName = null;
 let campaignImageMime = null;
 
+function readFileAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = ev => resolve(ev?.target?.result || '');
+    r.onerror = () => reject(new Error('read_failed'));
+    r.readAsDataURL(file);
+  });
+}
+
+async function ensureCampaignMediaData() {
+  if (campaignImageData && String(campaignImageData).startsWith('data:')) return true;
+
+  const composeHasFile = !!document.getElementById('imageFile')?.files?.[0];
+  const quickHasFile = !!document.getElementById('qs-imageFile')?.files?.[0];
+  const hasExplicitMediaIntent =
+    !!campaignImageName ||
+    composeHasFile ||
+    quickHasFile ||
+    document.getElementById('imagePreview')?.style.display !== 'none';
+
+  // Don't auto-load stale media from storage when user is doing a text-only send.
+  if (!hasExplicitMediaIntent) return false;
+
+  try {
+    const st = await chrome.storage.local.get('campaignMedia');
+    const m = st?.campaignMedia;
+    if (m?.data && typeof m.data === 'string' && m.data.startsWith('data:')) {
+      campaignImageData = m.data;
+      campaignImageName = m.name || campaignImageName;
+      campaignImageMime = m.mime || campaignImageMime;
+      return true;
+    }
+  } catch (_) {}
+
+  const pickers = [document.getElementById('imageFile'), document.getElementById('qs-imageFile')];
+  for (const inp of pickers) {
+    const f = inp?.files?.[0];
+    if (!f) continue;
+    try {
+      const data = await readFileAsDataURL(f);
+      if (data && data.startsWith('data:')) {
+        campaignImageData = data;
+        campaignImageName = f.name || campaignImageName;
+        campaignImageMime = f.type || campaignImageMime || 'image/jpeg';
+        chrome.storage.local.set({ campaignMedia: { data: campaignImageData, name: campaignImageName, mime: campaignImageMime } });
+        return true;
+      }
+    } catch (_) {}
+  }
+
+  return false;
+}
+
 document.getElementById('imagePickBtn').addEventListener('click', () => {
   document.getElementById('imageFile').click();
 });
@@ -1023,13 +1076,19 @@ document.getElementById('imageFile').addEventListener('change', e => {
     campaignImageData = ev.target.result;
     campaignImageName = file.name;
     campaignImageMime = file.type || (isVideo ? 'video/mp4' : 'image/jpeg');
+    chrome.storage.local.set({ campaignMedia: { data: campaignImageData, name: campaignImageName, mime: campaignImageMime } });
     document.getElementById('imageFileName').textContent = file.name;
     const preview = document.getElementById('imagePreview');
     const imgEl = document.getElementById('imagePreviewImg');
+    const videoEl = document.getElementById('videoPreviewEl');
     const videoLabel = document.getElementById('videoPreviewLabel');
     const videoNameEl = document.getElementById('videoFileName');
     if (isVideo) {
       imgEl.style.display = 'none';
+      if (videoEl) {
+        videoEl.src = campaignImageData;
+        videoEl.style.display = 'block';
+      }
       if (videoLabel && videoNameEl) {
         videoNameEl.textContent = file.name;
         videoLabel.style.display = 'block';
@@ -1037,6 +1096,10 @@ document.getElementById('imageFile').addEventListener('change', e => {
     } else {
       imgEl.src = campaignImageData;
       imgEl.style.display = 'block';
+      if (videoEl) {
+        videoEl.src = '';
+        videoEl.style.display = 'none';
+      }
       if (videoLabel) videoLabel.style.display = 'none';
     }
     preview.style.display = 'block';
@@ -1049,6 +1112,7 @@ document.getElementById('imageFile').addEventListener('change', e => {
 
 document.getElementById('imageClearBtn').addEventListener('click', () => {
   campaignImageData = campaignImageName = campaignImageMime = null;
+  chrome.storage.local.remove('campaignMedia');
   document.getElementById('imageFile').value = '';
   document.getElementById('imageFileName').textContent = 'No file chosen';
   document.getElementById('imagePreview').style.display = 'none';
@@ -1152,6 +1216,7 @@ document.getElementById('qs-imageFile')?.addEventListener('change', e => {
     campaignImageData = ev.target.result;
     campaignImageName = f.name;
     campaignImageMime = f.type || (isVideo ? 'video/mp4' : 'image/jpeg');
+    chrome.storage.local.set({ campaignMedia: { data: campaignImageData, name: campaignImageName, mime: campaignImageMime } });
     document.getElementById('qs-imageFileName').textContent = f.name;
     document.getElementById('qs-imageClearBtn').style.display = '';
   };
@@ -1159,6 +1224,7 @@ document.getElementById('qs-imageFile')?.addEventListener('change', e => {
 });
 document.getElementById('qs-imageClearBtn')?.addEventListener('click', () => {
   campaignImageData = campaignImageName = campaignImageMime = null;
+  chrome.storage.local.remove('campaignMedia');
   document.getElementById('qs-imageFile').value = '';
   document.getElementById('qs-imageFileName').textContent = 'No file';
   document.getElementById('qs-imageClearBtn').style.display = 'none';
@@ -1172,8 +1238,10 @@ document.getElementById('qs-sendBtn').addEventListener('click', async () => {
   const v = validatePhone(phone);
   if (!v.valid) return showResult('qs-result', '⛔ ' + v.error, 'err');
   // Allow image-only (caption from Compose) or text-only
+  await ensureCampaignMediaData();
   let imageUrl = campaignImageData || document.getElementById('imagePreviewImg')?.src;
   if (imageUrl && !imageUrl.startsWith('data:')) imageUrl = null;
+  if (!imageUrl && campaignImageName) return showResult('qs-result', '⛔ Media selected earlier but not available now. Re-attach file.', 'err');
   if (!message && !imageUrl) return showResult('qs-result', '⛔ Enter a message or attach image in Compose tab', 'err');
 
   const btn = document.getElementById('qs-sendBtn');
@@ -1215,9 +1283,11 @@ function parsePhonesForBlast(raw, defaultCountry = '91') {
 }
 
 // Blast to CSV contacts — single handler: upload CSV → Quick Blast → send to all
-document.getElementById('qs-blastFromCsvBtn')?.addEventListener('click', () => {
+document.getElementById('qs-blastFromCsvBtn')?.addEventListener('click', async () => {
   const msg = document.getElementById('qs-blast-msg').value.trim();
+  await ensureCampaignMediaData();
   if (!contacts.length) return showResult('qs-blast-result', '⛔ Upload a CSV in Contacts tab first', 'err');
+  if (!campaignImageData && campaignImageName) return showResult('qs-blast-result', '⛔ Media selected earlier but not available now. Re-attach file.', 'err');
   if (!msg && !campaignImageData) return showResult('qs-blast-result', '⛔ Enter a message or attach image above', 'err');
   const blastContacts = contacts.filter(c => (c.phone || '').replace(/\D/g, '').length >= 10).map(c => ({ ...crmDefaults(c), status: 'pending' }));
   if (!blastContacts.length) return showResult('qs-blast-result', '⛔ No valid phone numbers in imported contacts', 'err');
@@ -1246,11 +1316,13 @@ document.getElementById('qs-blastFromCsvBtn')?.addEventListener('click', () => {
 });
 
 // Multi-number blast (paste numbers)
-document.getElementById('qs-blastBtn').addEventListener('click', () => {
+document.getElementById('qs-blastBtn').addEventListener('click', async () => {
   const phonesRaw = document.getElementById('qs-phones').value.trim();
   const msg       = document.getElementById('qs-blast-msg').value.trim();
+  await ensureCampaignMediaData();
   if (!phonesRaw) return showResult('qs-blast-result', '⛔ Enter phone numbers', 'err');
-  if (!msg)       return showResult('qs-blast-result', '⛔ Enter a message', 'err');
+  if (!msg && !campaignImageData) return showResult('qs-blast-result', '⛔ Enter a message or attach image/video', 'err');
+  if (!campaignImageData && campaignImageName) return showResult('qs-blast-result', '⛔ Media selected earlier but not available now. Re-attach file.', 'err');
 
   const defaultCc = (document.getElementById('qs-blast-country')?.value || '91').replace(/\D/g, '');
   const phones = parsePhonesForBlast(phonesRaw, defaultCc);
@@ -1581,12 +1653,24 @@ function showError(msg) {
   setTimeout(() => { document.getElementById('progressArea').style.display = 'none'; setStatus('Idle',''); }, 5000);
 }
 
-function startCampaign() {
+async function startCampaign() {
   const template  = document.getElementById('msgTemplate').value.trim();
   const templateB = document.getElementById('msgTemplateB').value.trim();
   const abEnabled = document.getElementById('abEnabled').checked;
+  await ensureCampaignMediaData();
   // Recover image from preview DOM if state was lost (e.g. tab switch)
   let imageUrl = campaignImageData || null;
+  if (!imageUrl) {
+    try {
+      const st = await chrome.storage.local.get('campaignMedia');
+      if (st?.campaignMedia?.data?.startsWith('data:')) {
+        imageUrl = st.campaignMedia.data;
+        campaignImageData = st.campaignMedia.data;
+        campaignImageName = st.campaignMedia.name || campaignImageName;
+        campaignImageMime = st.campaignMedia.mime || campaignImageMime;
+      }
+    } catch (_) {}
+  }
   if (!imageUrl) {
     const previewImg = document.getElementById('imagePreviewImg');
     if (previewImg?.src?.startsWith('data:')) {
@@ -1596,8 +1680,18 @@ function startCampaign() {
       if (!campaignImageName) campaignImageName = 'image.jpg';
     }
   }
+  if (!imageUrl) {
+    const previewVideo = document.getElementById('videoPreviewEl');
+    if (previewVideo?.src?.startsWith('data:')) {
+      imageUrl = previewVideo.src;
+      const m = imageUrl.match(/^data:([^;]+);/);
+      if (m) campaignImageMime = m[1];
+      if (!campaignImageName) campaignImageName = 'video.mp4';
+    }
+  }
   const imageMime = campaignImageMime || 'image/jpeg';
   const imageName = campaignImageName || 'image.jpg';
+  if (!imageUrl && campaignImageName) return showError('Media selected earlier but data is missing. Re-attach image/video before starting bulk.');
 
   if (!contacts.length) return showError('Add contacts first (Contacts tab)');
   if (!template && !imageUrl) return showError('Write a message template (Compose tab) or attach image/video');
@@ -1623,7 +1717,8 @@ function startCampaign() {
     type: 'START_CAMPAIGN',
     data: { contacts, template, templateB, abEnabled, imageUrl, imageMime, imageName, settings: { ...settings, minDelay: delaySec, maxDelay: delaySec, campaignName } }
   }, resp => {
-    if (chrome.runtime.lastError) { showError('Start failed: ' + chrome.runtime.lastError.message); setRunningUI(false); isRunning = false; }
+    if (chrome.runtime.lastError) { showError('Start failed: ' + chrome.runtime.lastError.message); setRunningUI(false); isRunning = false; return; }
+    if (resp && resp.success === false) { showError(resp.error || 'Campaign start failed'); setRunningUI(false); isRunning = false; }
   });
 }
 
@@ -2494,16 +2589,25 @@ function renderSegments() {
       row.innerHTML = `<span class="hint"><strong style="color:#25D366">${filtered.length}</strong> contacts match "${esc(activeSegmentFilter.name)}"</span>
         <button class="btn btn-green btn-sm" id="seg-blastBtn">🚀 Blast to Segment</button>`;
       document.getElementById('seg-list').after(row);
-      document.getElementById('seg-blastBtn').addEventListener('click', () => {
+      document.getElementById('seg-blastBtn').addEventListener('click', async () => {
         const template = document.getElementById('msgTemplate').value.trim();
-        if (!template) { showToast('Write a template in the Compose tab first', 'err'); return; }
+        await ensureCampaignMediaData();
+        if (!template && !campaignImageData) { showToast('Write a template or attach image/video in Compose first', 'err'); return; }
         const delaySec = parseInt(document.getElementById('minDelay')?.value) || 15;
         filtered.forEach(c => c.status = 'pending');
         saveContacts();
         isRunning = true; setRunningUI(true); setStatus('Starting', 'running');
         chrome.runtime.sendMessage({
           type: 'START_CAMPAIGN',
-          data: { contacts: filtered, template, abEnabled: false, settings: { ...settings, minDelay: delaySec, maxDelay: delaySec } }
+          data: {
+            contacts: filtered,
+            template,
+            abEnabled: false,
+            imageUrl: campaignImageData || null,
+            imageMime: campaignImageMime || 'image/jpeg',
+            imageName: campaignImageName || 'image.jpg',
+            settings: { ...settings, minDelay: delaySec, maxDelay: delaySec }
+          }
         }, resp => {
           if (!resp?.success) { showError(resp?.error || 'Failed'); setRunningUI(false); isRunning = false; }
         });

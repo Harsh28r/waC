@@ -1,9 +1,35 @@
 /* Runs in page MAIN world via chrome.scripting — bypasses WA Web CSP (inline scripts are blocked). */
 (function () {
-  if (window.__waBulkPageMain) return;
-
   var WA_B64_HOLDER_ID = '__wa_ext_media_b64_hold';
   var SEL_IMAGE = 'input[accept="image/*,video/mp4,video/3gpp,video/quicktime"]';
+
+  function setInputFilesFromDataTransfer(input, fileList) {
+    try {
+      input.value = '';
+    } catch (e) {}
+    var desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'files');
+    if (desc && desc.set) {
+      try {
+        desc.set.call(input, fileList);
+        return true;
+      } catch (e) {}
+    }
+    try {
+      input.files = fileList;
+      return true;
+    } catch (e2) {}
+    try {
+      Object.defineProperty(input, 'files', {
+        configurable: true,
+        enumerable: true,
+        get: function () {
+          return fileList;
+        }
+      });
+      return true;
+    } catch (e3) {}
+    return false;
+  }
 
   function collectInputs() {
     var out = [];
@@ -33,7 +59,27 @@
     if (inp.hasAttribute('multiple') && /image/.test(a)) return 55;
     if (/webp/.test(a) && !/video/.test(a) && a.indexOf('image/*') < 0) return -80;
     if (a.indexOf('image/*') >= 0) return 60 + (inAttach ? 120 : 0);
+    if (a.indexOf('image') >= 0 && /video/.test(a)) return 55 + (inAttach ? 100 : 0);
+    if (a === 'image/*') return 58 + (inAttach ? 115 : 0);
     return inAttach ? 25 : 0;
+  }
+
+  function sortedGalleryCandidates(inputs) {
+    var scored = inputs.map(function (inp) {
+      return { inp: inp, s: scoreInp(inp) };
+    });
+    scored = scored.filter(function (x) {
+      return x.s > -200;
+    });
+    scored.sort(function (a, b) {
+      if (b.s !== a.s) return b.s - a.s;
+      if (a.inp.compareDocumentPosition(b.inp) & Node.DOCUMENT_POSITION_FOLLOWING) return 1;
+      if (b.inp.compareDocumentPosition(a.inp) & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+      return 0;
+    });
+    return scored.map(function (x) {
+      return x.inp;
+    });
   }
 
   function lastInDocumentOrder(nodes) {
@@ -71,6 +117,8 @@
   }
 
   window.__waBulkPageMain = {
+    __apiVersion: 6,
+
     patchFileInputs: function () {
       if (!window.__waInputsPatched) window.__waInputsPatched = [];
       var n = 0;
@@ -98,14 +146,30 @@
       return { patched: n, totalTracked: window.__waInputsPatched.length };
     },
 
-    galleryInject: function (mime, name) {
+    galleryInject: function (mime, name, pickIndex) {
       var holder = document.getElementById(WA_B64_HOLDER_ID);
       if (!holder || typeof holder.value !== 'string' || !holder.value.length) return { error: 'no b64 holder' };
       var b64 = holder.value;
       holder.value = '';
       var inputs = collectInputs();
-      var input = pickGalleryInput(inputs);
-      if (!input) return { error: 'no file input', nInputs: inputs.length };
+      var candidates = sortedGalleryCandidates(inputs);
+      var idx = pickIndex == null || pickIndex === '' ? 0 : Math.max(0, parseInt(pickIndex, 10) || 0);
+      var input = candidates[idx];
+      if (input == null && candidates.length === 0) input = pickGalleryInput(inputs);
+      else if (input == null) {
+        return { error: 'pickIndex_oob', nCand: candidates.length, pickIndex: idx };
+      }
+      if (!input) {
+        return {
+          error: 'no file input',
+          nInputs: inputs.length,
+          nCand: candidates.length,
+          pickIndex: idx,
+          debug: inputs.map(function (i) {
+            return { accept: (i.accept || '').slice(0, 60), s: scoreInp(i) };
+          })
+        };
+      }
       function restoreClick(inp) {
         if (!inp || !inp._origClick) return;
         inp.click = inp._origClick;
@@ -129,13 +193,8 @@
       var f = new File([new Blob([u], { type: mime || 'image/jpeg' })], name || 'image.jpg', { type: mime || 'image/jpeg' });
       var dt = new DataTransfer();
       dt.items.add(f);
-      var ns = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'files');
-      ns = ns && ns.set;
-      try {
-        if (ns) ns.call(input, dt.files);
-        else input.files = dt.files;
-      } catch (e) {
-        return { error: 'files setter: ' + (e && e.message) };
+      if (!setInputFilesFromDataTransfer(input, dt.files)) {
+        return { error: 'files setter failed on all strategies', accept: (input.accept || '').slice(0, 80) };
       }
       try {
         input.focus();
@@ -145,7 +204,14 @@
         input.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, data: null }));
       } catch (e3) {}
       input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
-      return { ok: true, accept: (input.accept || '').slice(0, 100), score: scoreInp(input), nInputs: inputs.length };
+      return {
+        ok: true,
+        accept: (input.accept || '').slice(0, 100),
+        score: scoreInp(input),
+        nInputs: inputs.length,
+        pickIndex: idx,
+        nCand: candidates.length
+      };
     },
 
     dragDrop: function (mime, name) {
@@ -159,28 +225,67 @@
       var file = new File([new Blob([u], { type: mime || 'image/jpeg' })], name || 'image.jpg', { type: mime || 'image/jpeg' });
       var dt = new DataTransfer();
       dt.items.add(file);
-      var z = document.querySelector('[data-testid="conversation-panel-body"]') ||
-        document.querySelector('#main .copyable-area') ||
-        document.querySelector('#main') ||
+      var z =
+        document.querySelector('[data-testid="conversation-panel-body"]') ||
         document.querySelector('[data-testid="conversation-panel-wrapper"]') ||
+        document.querySelector('#main .copyable-area') ||
+        document.querySelector('#main [role="application"]') ||
+        document.querySelector('#main') ||
         document.body;
-      z.dispatchEvent(new DragEvent('dragenter', { dataTransfer: dt, bubbles: true, cancelable: true }));
-      z.dispatchEvent(new DragEvent('dragover', { dataTransfer: dt, bubbles: true, cancelable: true }));
-      z.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }));
+      try {
+        dt.dropEffect = 'copy';
+        dt.effectAllowed = 'all';
+      } catch (e0) {}
+      ['dragenter', 'dragover', 'drop'].forEach(function (type) {
+        var ev;
+        try {
+          ev = new DragEvent(type, { dataTransfer: dt, bubbles: true, cancelable: true, composed: true });
+        } catch (e1) {
+          ev = document.createEvent('DragEvent');
+          ev.initDragEvent(type, true, true, window, 0, 0, 0, 0, 0, false, false, false, false, 0, null);
+          try {
+            Object.defineProperty(ev, 'dataTransfer', { get: function () { return dt; } });
+          } catch (e2) {}
+        }
+        try {
+          z.dispatchEvent(ev);
+        } catch (e3) {}
+      });
+      try {
+        var foot = document.querySelector('#main footer') || document.querySelector('footer');
+        if (foot && foot !== z) {
+          try {
+            foot.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true, composed: true }));
+          } catch (e4a) {}
+        }
+      } catch (e4) {}
       return { ok: true };
     },
 
     insertCaption: function (text) {
       if (!text) return { found: false };
       function cap() {
+        var dialogs = document.querySelectorAll('[role="dialog"]');
+        var d, i;
+        for (d = 0; d < dialogs.length; d++) {
+          if (!dialogs[d].querySelector('[aria-label="Remove attachment"], [aria-label*="thumbnail"], [aria-label*="video thumbnail"], [data-testid="media-caption-input-container"]')) continue;
+          var named = dialogs[d].querySelector('[data-testid="media-caption-input-container"] div[contenteditable]');
+          if (named) return named;
+          var t11 = dialogs[d].querySelector('div[contenteditable][data-tab="11"]');
+          if (t11) return t11;
+          var t10 = dialogs[d].querySelector('div[contenteditable][data-tab="10"]');
+          if (t10) return t10;
+          var ce = dialogs[d].querySelector('div[contenteditable="true"]');
+          if (ce) return ce;
+        }
         var t10 = document.querySelector('div[contenteditable][data-tab="10"]');
         if (t10 && !t10.closest('footer')) return t10;
-        var t11 = document.querySelector('div[contenteditable][data-tab="11"]');
-        if (t11) return t11;
-        var named = document.querySelector('[data-testid="media-caption-input-container"] div[contenteditable]');
-        if (named) return named;
+        var t11g = document.querySelector('div[contenteditable][data-tab="11"]');
+        if (t11g) return t11g;
+        var named2 = document.querySelector('[data-testid="media-caption-input-container"] div[contenteditable]');
+        if (named2) return named2;
         var all = document.querySelectorAll('div[contenteditable="true"]');
-        for (var i = 0; i < all.length; i++) {
+        for (i = 0; i < all.length; i++) {
           if (!all[i].closest('footer') && all[i].offsetParent) return all[i];
         }
         return null;
@@ -211,11 +316,24 @@
     },
 
     sendEnterCap: function () {
-      var t10 = document.querySelector('div[contenteditable][data-tab="10"]');
-      var el = (t10 && !t10.closest('footer')) ? t10
-        : document.querySelector('div[contenteditable][data-tab="11"]') ||
-          document.querySelector('[data-testid="media-caption-input-container"] div[contenteditable]') ||
+      var el = null;
+      var dialogs = document.querySelectorAll('[role="dialog"]');
+      for (var d = 0; d < dialogs.length && !el; d++) {
+        if (!dialogs[d].querySelector('[aria-label="Remove attachment"], [aria-label*="thumbnail"], [data-testid="media-caption-input-container"]')) continue;
+        el =
+          dialogs[d].querySelector('[data-testid="media-caption-input-container"] div[contenteditable]') ||
+          dialogs[d].querySelector('div[contenteditable][data-tab="11"]') ||
+          dialogs[d].querySelector('div[contenteditable][data-tab="10"]') ||
           null;
+      }
+      if (!el) {
+        var t10 = document.querySelector('div[contenteditable][data-tab="10"]');
+        el = (t10 && !t10.closest('footer'))
+          ? t10
+          : document.querySelector('div[contenteditable][data-tab="11"]') ||
+            document.querySelector('[data-testid="media-caption-input-container"] div[contenteditable]') ||
+            null;
+      }
       if (!el) {
         var all = document.querySelectorAll('div[contenteditable="true"]');
         for (var i = 0; i < all.length; i++) {

@@ -140,26 +140,56 @@ async function startTrialIfEligible() {
 }
 
 // ─── MAIN world on WA tab (CSP blocks content-script inline <script>) ───────────
-async function executeWaPageMain(tabId, method, payload) {
-  const args = (payload && payload.args) || [];
-  let exists = false;
+/** Bump when wa-page-main.js behavior changes — stale tabs otherwise keep old IIFE forever. */
+const WA_PAGE_MAIN_API_VERSION = 6;
+
+async function ensureWaPageMainApi(tabId) {
+  let versionOk = false;
   try {
     const chk = await chrome.scripting.executeScript({
       target: { tabId },
       world: 'MAIN',
-      func: () => typeof window.__waBulkPageMain === 'object' && window.__waBulkPageMain != null
+      func: (v) =>
+        typeof window.__waBulkPageMain === 'object' &&
+        window.__waBulkPageMain != null &&
+        window.__waBulkPageMain.__apiVersion === v,
+      args: [WA_PAGE_MAIN_API_VERSION]
     });
-    exists = !!(chk && chk[0] && chk[0].result === true);
+    versionOk = !!(chk && chk[0] && chk[0].result === true);
   } catch (e) {
     return { error: 'scripting check: ' + e.message };
   }
-  if (!exists) {
-    try {
-      await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', files: ['wa-page-main.js'] });
-    } catch (e) {
-      return { error: 'load wa-page-main.js: ' + e.message };
-    }
+  if (versionOk) return null;
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'MAIN',
+      func: () => {
+        try {
+          if (window.__waFileInputObserver) {
+            window.__waFileInputObserver.disconnect();
+            window.__waFileInputObserver = null;
+          }
+        } catch (e) {}
+        window.__waInputsPatched = null;
+        delete window.__waBulkPageMain;
+      }
+    });
+  } catch (e) {
+    /* ignore */
   }
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', files: ['wa-page-main.js'] });
+  } catch (e) {
+    return { error: 'load wa-page-main.js: ' + e.message };
+  }
+  return null;
+}
+
+async function executeWaPageMain(tabId, method, payload) {
+  const args = (payload && payload.args) || [];
+  const prep = await ensureWaPageMainApi(tabId);
+  if (prep && prep.error) return prep;
   try {
     const [{ result }] = await chrome.scripting.executeScript({
       target: { tabId },
@@ -267,8 +297,11 @@ async function runCampaign(data) {
   campaignRunning = true;
   shouldStop = false;
 
-  const { contacts, template, templateB, abEnabled, imageUrl, imageMime, imageName, settings } = data;
-  console.log('[WA] Campaign start:', contacts.length, 'contacts, A/B:', abEnabled);
+  const { contacts, template, templateB, abEnabled, settings } = data;
+  const imageUrl = data.imageUrl || null;
+  const imageMime = data.imageMime || 'image/jpeg';
+  const imageName = data.imageName || 'image.jpg';
+  console.log('[WA] Campaign start:', contacts.length, 'contacts, A/B:', abEnabled, imageUrl ? '(with media)' : '(text only)');
 
   await broadcastProgress({ status: 'starting', total: contacts.length, currentIndex: 0 });
 
@@ -351,8 +384,11 @@ async function runCampaign(data) {
 
 // ─── Quick Send ───────────────────────────────────────────────────────────────
 async function quickSend(data) {
-  const { phone, message, stealthMode, imageUrl, imageMime, imageName } = data;
-  console.log('[WA] Quick send to:', phone, imageUrl ? '(with image)' : '');
+  const { phone, message, stealthMode } = data;
+  const imageUrl = data.imageUrl || null;
+  const imageMime = data.imageMime || 'image/jpeg';
+  const imageName = data.imageName || 'image.jpg';
+  console.log('[WA] Quick send to:', phone, imageUrl ? '(with media)' : '(text only)');
 
   // DNC check
   const dncStored = await chrome.storage.local.get('dnc');
@@ -648,11 +684,14 @@ async function sendWhatsAppMessage(tabId, phone, message, stealthMode = false, i
       };
       if (dataLen < 120000) tabPayload.imageData = payload.imageData;
       let response = await sendMessageToTab(tabId, tabPayload, 8);
-      // Fallback: if image failed, send caption as text so user doesn't lose the message
-      if (response && !response.success && payload.caption) {
-        await chrome.tabs.update(tabId, { url: `https://web.whatsapp.com/send?phone=${phoneClean}` });
-        await sleep(2000);
-        response = await sendMessageToTab(tabId, { type: 'TYPE_AND_SEND', message: payload.caption }, 5);
+      // Never downgrade image/video sends to plain text.
+      // If media send fails, retry media once after a hard chat refresh.
+      if (!response || !response.success) {
+        await chrome.tabs.update(tabId, { url: `https://web.whatsapp.com/send?phone=${phoneClean}`, active: !stealthMode });
+        await sleep(1200);
+        await waitForTabLoad(tabId);
+        await sleep(isVideo ? 9000 : 8000);
+        response = await sendMessageToTab(tabId, tabPayload, 8);
       }
       return response || { success: false, error: 'No response from WA page — is WA Web logged in?' };
     }
