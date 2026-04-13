@@ -20,25 +20,28 @@
     <div class="header-right">
       <button class="privacy-btn" id="privacyBtn" title="Toggle Privacy Mode">👁️</button>
       <div class="status-pill" id="statusPill">● Idle</div>
-      <a href="https://wabulkai.com/#pricing" target="_blank" class="plan-pill" id="planPill" title="Plan & upgrade">Free</a>
+      <a href="https://wabulkai.com/#pricing" target="_blank" class="plan-pill" id="planPill" title="License status">Free</a>
       <button class="close-panel-btn" id="closePanelBtn" title="Close dashboard">×</button>
     </div>
   </div>
 
   <!-- ── Tab Bar: Phase 1 = Contacts, Sender, Tasks, Settings. Rest = data-phase="2" ── -->
   <div class="tab-bar">
-    <button class="tab active" data-tab="contacts">📋 Contacts</button>
-    <button class="tab" data-tab="sender">⚡ Sender</button>
-    <button class="tab" data-tab="tasks">✅ Tasks</button>
+    <button class="tab active requires-license" data-tab="contacts">📋 Contacts</button>
+    <button class="tab requires-license" data-tab="sender">⚡ Sender</button>
+    <button class="tab requires-license" data-tab="tasks">✅ Tasks</button>
     <button class="tab" data-tab="settings">⚙️ Settings</button>
-    <button class="tab" data-tab="pipeline" data-phase="2">🎯 Pipeline</button>
-    <button class="tab" data-tab="compose" data-phase="2">✍️ Compose</button>
-    <button class="tab" data-tab="drip" data-phase="2">📩 Drip</button>
-    <button class="tab" data-tab="auto" data-phase="2">🤖 Auto Reply</button>
-    <button class="tab" data-tab="replies" data-phase="2">💬 Replies</button>
-    <button class="tab" data-tab="analytics" data-phase="2">📊 Stats</button>
-    <button class="tab" data-tab="dashboard" data-phase="2">📋 Dashboard</button>
-    <button class="tab" data-tab="report" data-phase="2">📈 Data Report</button>
+    <button class="tab requires-license" data-tab="pipeline" data-phase="2">🎯 Pipeline</button>
+    <button class="tab requires-license" data-tab="compose" data-phase="2">✍️ Compose</button>
+    <button class="tab requires-license" data-tab="drip" data-phase="2">📩 Drip</button>
+    <button class="tab requires-license" data-tab="auto" data-phase="2">🤖 Auto Reply</button>
+    <button class="tab requires-license" data-tab="replies" data-phase="2">💬 Replies</button>
+    <button class="tab requires-license" data-tab="analytics" data-phase="2">📊 Stats</button>
+    <button class="tab requires-license" data-tab="dashboard" data-phase="2">📋 Dashboard</button>
+    <button class="tab requires-license" data-tab="report" data-phase="2">📈 Data Report</button>
+  </div>
+  <div class="license-gate-banner" id="licenseGateBanner" style="display:none">
+    🔒 <strong>Activation required</strong> — Paste your license key in <strong>Settings</strong> below to unlock bulk send, AI, drip, CRM, and analytics.
   </div>
   <div class="phase1-teaser" id="phase1Teaser" style="display:none">Bulk campaigns, Drip, AI Reply &amp; more — coming in next update.</div>
 
@@ -807,6 +810,20 @@
          SETTINGS TAB
          ════════════════════════════════════════════════ -->
     <div class="panel" id="panel-settings">
+
+      <div class="card mb-12" id="license-card">
+        <div class="row justify-between align-center mb-6">
+          <div class="section-title">🔑 License</div>
+          <span id="lic-badge" class="plan-pill">Free</span>
+        </div>
+        <p class="hint mb-6">Bulk messaging, AI, drip, CRM, and analytics stay locked until you paste a valid <strong>license key</strong> below. After activation, your <strong>User ID</strong> appears under “License”.</p>
+        <div id="lic-info" class="hint mb-8" style="display:none"></div>
+        <div id="lic-activate-wrap">
+          <input type="text" id="lic-key-input" class="input mb-6" placeholder="WABAI-USRxxxxxx-PRO-xxxxxxxxxx-XXXXXXXX" autocomplete="off" spellcheck="false">
+          <button class="btn btn-green btn-sm" id="lic-activateBtn" style="width:100%">🔓 Activate license</button>
+        </div>
+        <div id="lic-result" class="result-msg mt-6" style="display:none"></div>
+      </div>
 
       <div class="form-group">
         <label class="label">AI for Auto Reply &amp; Messages</label>

@@ -15,11 +15,11 @@ const faqs = [
   },
   {
     q: 'How does the AI reply feature work?',
-    a: 'Our AI analyzes incoming messages and generates contextual, professional responses using GPT-4. You can train it on your FAQ, set tone preferences, and approve replies before sending.',
+    a: 'You connect Gemini or Claude with your own API key. The extension sends recent chat context to that provider and drafts a reply you can send or tweak — nothing is routed through our servers.',
   },
   {
-    q: 'Can I cancel my Pro subscription anytime?',
-    a: 'Yes, cancel anytime with one click. No questions asked, no hidden fees. Your Pro features remain active until the end of your billing cycle.',
+    q: 'Is WA Bulk AI really free? Any hidden fees?',
+    a: 'The Chrome extension is completely free — no subscription and no in-app upgrade. Optional AI features use your own API keys; Google Gemini offers a free tier at AI Studio, and other providers bill you directly only if you use them.',
   },
   {
     q: 'Does it work with WhatsApp groups?',

@@ -14,14 +14,24 @@ const PIN_MAX   = 6;
 let settings    = { apiKey: '', geminiApiKey: '', openaiApiKey: '', aiProvider: 'gemini', aiEnabled: false, minDelay: 15, maxDelay: 45, dailyLimit: 100, stealthMode: false, autoPrivacy: false };
 
 // ─── Suppress "message channel closed" runtime.lastError warnings ─────────────
-// MV3 service workers can terminate before responding; this wrapper ensures
-// chrome.runtime.lastError is always read so Chrome doesn't log it as unchecked.
+// MV3: only wrap when a real callback is passed. If we inject a dummy callback when
+// `cb` is omitted, `await chrome.runtime.sendMessage(msg)` never gets the response
+// (Promise resolves wrong / undefined) — license activate looked like "Invalid key".
 {
   const _orig = chrome.runtime.sendMessage.bind(chrome.runtime);
   chrome.runtime.sendMessage = function(msg, cb) {
-    return _orig(msg, cb
-      ? function(...a) { cb(...a); void chrome.runtime.lastError; }
-      : function()     { void chrome.runtime.lastError; });
+    if (typeof cb === 'function') {
+      return _orig(msg, function(...a) {
+        cb(...a);
+        void chrome.runtime.lastError;
+      });
+    }
+    const p = _orig(msg);
+    if (p && typeof p.then === 'function') {
+      return p.finally(() => { void chrome.runtime.lastError; });
+    }
+    void chrome.runtime.lastError;
+    return p;
   };
 }
 
@@ -215,16 +225,101 @@ function initCountryPicker(wrapId, hiddenId, defaultCode = '91', flagUrls = {}) 
 }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
-function renderPlanBadge() {
+function applyLicenseShell(lic) {
+  const root = document.querySelector('.app');
+  if (!root || !lic) return;
+  const locked = !lic.canUsePro;
+  root.classList.toggle('license-locked', locked);
+  const banner = document.getElementById('licenseGateBanner');
+  if (banner) banner.style.display = locked ? 'block' : 'none';
+  if (locked) {
+    document.querySelectorAll('.tab.requires-license').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    const stTab = document.querySelector('.tab[data-tab="settings"]');
+    const stPanel = document.getElementById('panel-settings');
+    if (stTab) stTab.classList.add('active');
+    if (stPanel) stPanel.classList.add('active');
+  }
+}
+
+function renderPlanBadge(lic) {
+  const pill = document.getElementById('planPill');
+  if (pill) {
+    if (lic.plan === 'pro') {
+      pill.textContent = 'Pro';
+      pill.className = 'plan-pill pro';
+      pill.title = lic.userId ? `Pro · User ID: ${lic.userId}` : 'Pro';
+    } else {
+      pill.textContent = 'Locked';
+      pill.className = 'plan-pill';
+      pill.title = 'Activate your license key in Settings';
+    }
+  }
+  const badge = document.getElementById('lic-badge');
+  const info = document.getElementById('lic-info');
+  const wrap = document.getElementById('lic-activate-wrap');
+  if (badge) {
+    if (lic.plan === 'pro') {
+      badge.textContent = '✅ Pro';
+      badge.className = 'plan-pill pro';
+      if (info) {
+        const exp = lic.expiresAt ? ' · Expires ' + new Date(lic.expiresAt).toLocaleDateString() : '';
+        info.textContent = `User ID: ${lic.userId || '—'}${exp}`;
+        info.style.display = 'block';
+      }
+      if (wrap) wrap.style.display = 'none';
+    } else {
+      badge.textContent = 'Locked';
+      badge.className = 'plan-pill';
+      if (info) {
+        info.textContent = '';
+        info.style.display = 'none';
+      }
+      if (wrap) wrap.style.display = 'block';
+    }
+  }
+  applyLicenseShell(lic);
+}
+
+/** Valid activated license required (no trial unlock for product features) */
+async function ensureActivatedLicense() {
+  const lic = await new Promise(r => chrome.runtime.sendMessage({ type: 'GET_LICENSE' }, r));
+  if (!lic || lic.canUsePro) return { ok: true };
+  return { ok: false, message: 'Activate your license key in Settings to use this feature.' };
+}
+
+function loadAndRenderPlan() {
   chrome.runtime.sendMessage({ type: 'GET_LICENSE' }, (lic) => {
     if (chrome.runtime.lastError || !lic) return;
-    const el = document.getElementById('planPill');
-    if (!el) return;
-    if (lic.plan === 'pro') { el.textContent = 'Pro'; el.className = 'plan-pill pro'; }
-    else if (lic.plan === 'trial' && lic.trialDaysLeft) { el.textContent = `Trial · ${lic.trialDaysLeft}d`; el.className = 'plan-pill trial'; }
-    else { el.textContent = 'Free'; el.className = 'plan-pill'; }
+    renderPlanBadge(lic);
   });
 }
+
+loadAndRenderPlan();
+
+document.getElementById('lic-activateBtn')?.addEventListener('click', async () => {
+  const key = (document.getElementById('lic-key-input')?.value || '').trim();
+  const result = document.getElementById('lic-result');
+  const btn = document.getElementById('lic-activateBtn');
+  if (!key) { result.textContent = '⚠️ Paste your license key first.'; result.style.color = '#f85149'; result.style.display = 'block'; return; }
+
+  btn.disabled = true;
+  btn.textContent = '⏳ Activating...';
+  const res = await chrome.runtime.sendMessage({ type: 'ACTIVATE_LICENSE', data: key });
+  btn.disabled = false;
+  btn.textContent = '🔓 Activate license';
+
+  if (res?.success) {
+    result.textContent = `✅ Pro active. User ID: ${res.userId}. Expires: ${new Date(res.expiresAt).toLocaleDateString()}`;
+    result.style.color = '#25D366';
+    result.style.display = 'block';
+    loadAndRenderPlan();
+  } else {
+    result.textContent = `❌ ${res?.error || 'Invalid key'}`;
+    result.style.color = '#f85149';
+    result.style.display = 'block';
+  }
+});
 
 chrome.storage.local.get(['contacts','settings','results','replies','pinnedChats'], (d) => {
   if (d.contacts)    { contacts    = d.contacts.map(c => crmDefaults(c)); renderContacts(); refreshEstimate(); }
@@ -232,7 +327,6 @@ chrome.storage.local.get(['contacts','settings','results','replies','pinnedChats
   if (d.results)     { results     = d.results;  renderLastResults(); }
   if (d.replies)     { replies     = d.replies;  renderReplies(); }
   if (d.pinnedChats) { pinnedChats = d.pinnedChats; renderPinnedChats(); }
-  renderPlanBadge();
   if (typeof updateLastMediaErrorDisplay === 'function') updateLastMediaErrorDisplay();
   chrome.runtime.sendMessage({ type: 'GET_FLAG_URLS' }, (flagUrls) => {
     const urls = flagUrls || {};
@@ -1365,6 +1459,9 @@ document.getElementById('scheduleBtn').addEventListener('click', async () => {
   const ts = new Date(timeVal).getTime();
   if (ts <= Date.now()) return showResult('scheduleResult', '⛔ Time must be in the future', 'err');
 
+  const schedGate = await ensureActivatedLicense();
+  if (!schedGate.ok) return showResult('scheduleResult', '⛔ ' + schedGate.message, 'err');
+
   await ensureCampaignMediaData();
   let template = document.getElementById('msgTemplate').value.trim();
   if (!template) template = await composeTemplateOrSavedRaw();
@@ -1440,6 +1537,8 @@ document.getElementById('qs-sendBtn').addEventListener('click', async () => {
   const qsInput = document.getElementById('qs-message').value.trim();
   const v = validatePhone(phone);
   if (!v.valid) return showResult('qs-result', '⛔ ' + v.error, 'err');
+  const qsGate = await ensureActivatedLicense();
+  if (!qsGate.ok) return showResult('qs-result', '⛔ ' + qsGate.message, 'err');
   await ensureCampaignMediaData();
   let imageUrl = campaignImageData || document.getElementById('imagePreviewImg')?.src;
   if (imageUrl && !imageUrl.startsWith('data:')) imageUrl = null;
@@ -1505,6 +1604,8 @@ function parsePhonesForBlast(raw, defaultCountry = '91') {
 
 // Blast to CSV contacts — single handler: upload CSV → Quick Blast → send to all
 document.getElementById('qs-blastFromCsvBtn')?.addEventListener('click', async () => {
+  const csvGate = await ensureActivatedLicense();
+  if (!csvGate.ok) return showResult('qs-blast-result', '⛔ ' + csvGate.message, 'err');
   const msg = await resolveBlastTemplateRaw(document.getElementById('qs-blast-msg').value.trim());
   await ensureCampaignMediaData();
   if (!contacts.length) return showResult('qs-blast-result', '⛔ Upload a CSV in Contacts tab first', 'err');
@@ -1544,6 +1645,8 @@ document.getElementById('qs-blastFromCsvBtn')?.addEventListener('click', async (
 
 // Multi-number blast (paste numbers)
 document.getElementById('qs-blastBtn').addEventListener('click', async () => {
+  const multiGate = await ensureActivatedLicense();
+  if (!multiGate.ok) return showResult('qs-blast-result', '⛔ ' + multiGate.message, 'err');
   const phonesRaw = document.getElementById('qs-phones').value.trim();
   const msg       = await resolveBlastTemplateRaw(document.getElementById('qs-blast-msg').value.trim());
   await ensureCampaignMediaData();
@@ -1904,6 +2007,8 @@ function showError(msg) {
 }
 
 async function startCampaign() {
+  const gate = await ensureActivatedLicense();
+  if (!gate.ok) return showError(gate.message);
   let template = document.getElementById('msgTemplate').value.trim();
   if (!template) template = await composeTemplateOrSavedRaw();
   const templateB = document.getElementById('msgTemplateB').value.trim();
@@ -2557,7 +2662,7 @@ document.getElementById('arAutoChatBtn')?.addEventListener('click', () => {
   const aiTab = document.querySelector('.mode-tab[data-mode="ai"]');
   if (aiTab) { document.querySelectorAll('.mode-tab').forEach(t => t.classList.remove('active')); aiTab.classList.add('active'); document.getElementById('arTemplateMode').style.display = 'none'; document.getElementById('arAIMode').style.display = 'block'; }
   document.getElementById('arToggle').checked = true;
-  startAutoReplyBot();
+  void startAutoReplyBot();
 });
 
 // Fully automatic: sync options when toggled
@@ -2574,27 +2679,13 @@ document.getElementById('arFullyAuto')?.addEventListener('change', e => {
 // Toggle checkbox
 document.getElementById('arToggle').addEventListener('change', async e => {
   if (!e.target.checked) { stopAutoReplyBot(); return; }
-  const aiEnabled = document.getElementById('aiEnabled')?.checked;
-  if (aiEnabled) {
-    const lic = await new Promise(r => chrome.runtime.sendMessage({ type: 'GET_LICENSE' }, r));
-    if (!lic.canUsePro) {
-      if (!lic.trialUsed) {
-        const started = await new Promise(r => chrome.runtime.sendMessage({ type: 'START_TRIAL' }, r));
-        if (started?.started) { showToast(`Pro trial started — ${started.trialDaysLeft} days left`, 'ok'); renderPlanBadge(); }
-      } else {
-        showToast('AI Auto Reply is a Pro feature. Upgrade at wabulkai.com', 'err');
-        e.target.checked = false;
-        return;
-      }
-    }
-  }
-  startAutoReplyBot();
+  void startAutoReplyBot();
 });
 
 // Start / Stop buttons
 document.getElementById('arStartBtn').addEventListener('click', () => {
   document.getElementById('arToggle').checked = true;
-  startAutoReplyBot();
+  void startAutoReplyBot();
 });
 document.getElementById('arStopBtn').addEventListener('click', () => {
   document.getElementById('arToggle').checked = false;
@@ -2607,7 +2698,7 @@ document.getElementById('arClearLog').addEventListener('click', () => {
   renderArLog();
 });
 
-function startAutoReplyBot() {
+async function startAutoReplyBot() {
   const mode     = document.querySelector('.mode-tab.active')?.dataset.mode || 'template';
   const template = document.getElementById('arTemplate').value.trim() || "Thanks for your message! I'll get back to you soon.";
   const prompt   = document.getElementById('arPrompt').value.trim()   || 'Reply naturally and briefly to the message.';
@@ -2615,6 +2706,17 @@ function startAutoReplyBot() {
   const keyword  = document.getElementById('arKeyword').value.trim();
   const noKeywordReply = document.getElementById('arNoKeywordReply')?.value?.trim() || '';
   const noKeywordUseAI = !!document.getElementById('arNoKeywordUseAI')?.checked;
+
+  const fullyAuto = !!document.getElementById('arFullyAuto')?.checked;
+  const needsProAi = fullyAuto || mode === 'ai' || noKeywordUseAI;
+  if (needsProAi) {
+    const gate = await ensureActivatedLicense();
+    if (!gate.ok) {
+      showToast(gate.message, 'err');
+      document.getElementById('arToggle').checked = false;
+      return;
+    }
+  }
 
   const provider = settings.aiProvider || 'gemini';
   const apiKey = provider === 'gemini' ? (settings.geminiApiKey || '') : (settings.apiKey || '');
@@ -2625,7 +2727,6 @@ function startAutoReplyBot() {
   }
 
   const perChat = !!document.getElementById('arPerChat')?.checked;
-  const fullyAuto = !!document.getElementById('arFullyAuto')?.checked;
   if (fullyAuto && !apiKey) {
     showToast('Fully automatic needs an AI key (Settings → Gemini or Claude)', 'err');
     document.getElementById('arToggle').checked = false;
@@ -3025,6 +3126,8 @@ function renderSegments() {
         <button class="btn btn-green btn-sm" id="seg-blastBtn">🚀 Blast to Segment</button>`;
       document.getElementById('seg-list').after(row);
       document.getElementById('seg-blastBtn').addEventListener('click', async () => {
+        const segGate = await ensureActivatedLicense();
+        if (!segGate.ok) { showToast(segGate.message, 'err'); return; }
         let template = document.getElementById('msgTemplate').value.trim();
         if (!template) template = await composeTemplateOrSavedRaw();
         await ensureCampaignMediaData();

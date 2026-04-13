@@ -22,7 +22,7 @@ export default function Footer() {
         <div className="footer-col">
           <h4>Product</h4>
           <a href="#features">Features</a>
-          <a href="#pricing">Pricing</a>
+          <a href="#pricing">Free forever</a>
           <a href="#faq">FAQ</a>
           <a href="https://chrome.google.com/webstore" target="_blank" rel="noreferrer">Chrome Store</a>
         </div>

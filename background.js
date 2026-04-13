@@ -108,27 +108,109 @@ async function getFlagUrls() {
   return flagUrls;
 }
 
-// ─── License / Plan (Free vs Pro, 14-day trial) ─────────────────────────────────
-const TRIAL_DAYS = 14;
+// ─── License: activated Pro key only (no trial unlock for product features) ──────
+// IMPORTANT: keep this secret in sync with key-generator.js → LICENSE_SECRET
+const LICENSE_SECRET = 'wabulkai-secret-2024-xK9mP3qR';
+const TRIAL_DAYS = 7;
+/** Shown when user hits APIs without a valid activated license */
+const LICENSE_REQUIRED_MSG = 'Activate your license key in Settings (side panel) to use bulk messaging, AI, drip, and related features.';
+
+/** HMAC-SHA256 first 8 hex chars using SubtleCrypto (works in MV3 service worker) */
+async function hmac8(payload) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw', enc.encode(LICENSE_SECRET),
+    { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+  );
+  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(payload));
+  return Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 8).toUpperCase();
+}
+
+/** Strip junk from paste: unicode dashes, ZWSP, whitespace; optional prefix before WABAI-… */
+function normalizeLicenseKeyInput(raw) {
+  if (!raw || typeof raw !== 'string') return '';
+  let s = raw
+    .replace(/[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g, '-')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/\r?\n/g, '')
+    .trim();
+  const upper = s.toUpperCase();
+  const m = upper.match(/WABAI-[A-Z0-9]+-[A-Z]+-\d+-[A-F0-9]{8}/);
+  return m ? m[0] : upper.replace(/\s+/g, '');
+}
+
+/** Validate a license key and return { valid, userId, plan, expiresAt } */
+async function validateLicenseKey(key) {
+  if (!key || typeof key !== 'string') return { valid: false, reason: 'No key' };
+  key = normalizeLicenseKeyInput(key);
+  if (!key.startsWith('WABAI-')) return { valid: false, reason: 'Bad format' };
+  const parts = key.split('-');
+  // Expected: WABAI - USRxxxxxx - PLAN - expiresAt(unix sec) - sig(8 chars)
+  if (parts.length !== 5 || parts[0] !== 'WABAI') return { valid: false, reason: 'Bad format' };
+  const [, userId, plan, expiresAtStr, sig] = parts;
+  const expiresAt = parseInt(expiresAtStr, 10);
+  if (!expiresAt) return { valid: false, reason: 'Bad expiry' };
+
+  const payload     = `${userId}|${plan.toLowerCase()}|${expiresAt}`;
+  const expectedSig = await hmac8(payload);
+  if (sig !== expectedSig) {
+    return { valid: false, reason: 'Invalid key — typo or key was made with a different LICENSE_SECRET than this extension build' };
+  }
+  if (Date.now() / 1000 > expiresAt) return { valid: false, reason: 'Key expired', expired: true };
+
+  return { valid: true, userId, plan: plan.toLowerCase(), expiresAt };
+}
+
+async function activateLicense(key) {
+  const result = await validateLicenseKey(key);
+  if (!result.valid) return { success: false, error: result.reason };
+  const license = {
+    plan:        result.plan === 'pro' ? 'pro' : 'free',
+    key:         key.trim().toUpperCase(),
+    userId:      result.userId,
+    expiresAt:   result.expiresAt * 1000, // convert to ms
+    activatedAt: Date.now(),
+    trialUsed:   true,
+  };
+  await chrome.storage.local.set({ license });
+  return { success: true, userId: result.userId, plan: license.plan, expiresAt: license.expiresAt };
+}
 async function getLicense() {
   const { license = {} } = await chrome.storage.local.get('license');
-  const plan = license.plan || 'free';
-  const trialEnd = license.trialEnd || 0;
+  const plan      = license.plan || 'free';
+  const trialEnd  = license.trialEnd || 0;
   const trialUsed = license.trialUsed || false;
-  const now = Date.now();
-  const inTrial = plan === 'trial' && now < trialEnd;
-  const canUsePro = plan === 'pro' || inTrial;
+  const expiresAt = license.expiresAt || 0;   // pro key expiry (ms)
+  const now       = Date.now();
+
+  // If pro key has expired, revert to free
+  if (plan === 'pro' && expiresAt && now > expiresAt) {
+    await chrome.storage.local.set({ license: { ...license, plan: 'free' } });
+    return getLicense();
+  }
+  // If trial has expired, revert to free
   if (plan === 'trial' && now >= trialEnd) {
     await chrome.storage.local.set({ license: { ...license, plan: 'free', trialUsed: true } });
     return getLicense();
   }
+
+  const proActive = plan === 'pro' && expiresAt && now <= expiresAt;
+  const canUsePro = !!proActive;
   return {
-    plan: canUsePro ? (plan === 'pro' ? 'pro' : 'trial') : 'free',
+    plan: canUsePro ? 'pro' : 'free',
     canUsePro,
-    trialUsed,
-    trialEnd: inTrial ? trialEnd : null,
-    trialDaysLeft: inTrial ? Math.ceil((trialEnd - now) / (24 * 60 * 60 * 1000)) : 0,
+    trialUsed: !!trialUsed,
+    userId: license.userId || null,
+    trialEnd: null,
+    trialDaysLeft: 0,
+    expiresAt: canUsePro ? expiresAt : null,
+    daysLeft: canUsePro && expiresAt ? Math.ceil((expiresAt - now) / (24 * 60 * 60 * 1000)) : null,
   };
+}
+
+async function denyIfUnlicensed() {
+  const lic = await getLicense();
+  return lic.canUsePro ? null : LICENSE_REQUIRED_MSG;
 }
 async function startTrialIfEligible() {
   const { license = {} } = await chrome.storage.local.get('license');
@@ -229,6 +311,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // Async handlers — return true so Chrome keeps channel open
   const async_handlers = {
     GET_LICENSE:         () => getLicense(),
+    ACTIVATE_LICENSE:    () => activateLicense(msg.data),
     START_TRIAL:         () => startTrialIfEligible(),
     GET_FLAG_URLS:       () => getFlagUrls(),
     QUICK_SEND:          () => quickSend(msg.data),
@@ -295,6 +378,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 // ─── Bulk Campaign ────────────────────────────────────────────────────────────
 async function runCampaign(data) {
+  const denied = await denyIfUnlicensed();
+  if (denied) {
+    await broadcastProgress({ status: 'error', error: denied });
+    return;
+  }
   campaignRunning = true;
   shouldStop = false;
 
@@ -401,6 +489,8 @@ async function runCampaign(data) {
 
 // ─── Quick Send ───────────────────────────────────────────────────────────────
 async function quickSend(data) {
+  const denied = await denyIfUnlicensed();
+  if (denied) return { success: false, error: denied };
   const { phone, message, stealthMode } = data;
   const { imageUrl: resolvedImg, imageMime, imageName, stagingKey } = await resolveInlineOrStagedMedia(data);
   const imageUrl = resolvedImg;
@@ -431,6 +521,8 @@ async function quickSend(data) {
 
 // ─── Schedule Campaign ────────────────────────────────────────────────────────
 async function scheduleCampaign(data) {
+  const denied = await denyIfUnlicensed();
+  if (denied) return { success: false, error: denied };
   const { timestamp, campaignData } = data;
   const delay = timestamp - Date.now();
   if (delay < 0) return { success: false, error: 'Schedule time is in the past' };
@@ -445,6 +537,8 @@ async function scheduleCampaign(data) {
 
 // ─── Reply Scanner ────────────────────────────────────────────────────────────
 async function scanReplies(data) {
+  const denied = await denyIfUnlicensed();
+  if (denied) return { success: false, error: denied, replies: [] };
   const { contacts, apiKey, provider } = data;
   console.log('[WA] Scanning replies for', contacts.length, 'contacts');
 
@@ -561,6 +655,8 @@ async function scanReplies(data) {
 
 // ─── Send Reply ───────────────────────────────────────────────────────────────
 async function sendReplyToContact(data) {
+  const denied = await denyIfUnlicensed();
+  if (denied) return { success: false, error: denied };
   const { phone, message, originalText } = data;
 
   const tabId = await findOrCreateWATab();
@@ -617,6 +713,8 @@ async function openChatQuoted(data) {
 
 // ─── AI Reply Generator ───────────────────────────────────────────────────────
 async function generateAIReply(replyText, contactName, apiKey, provider) {
+  const denied = await denyIfUnlicensed();
+  if (denied) return null;
   const prompt = `You are helping reply to a WhatsApp message from ${contactName}.\n\nTheir message: "${replyText}"\n\nWrite a short, friendly, natural reply (max 2 sentences). Be helpful and conversational. Return ONLY the reply text, nothing else.`;
   const useGemini = (provider || 'gemini') === 'gemini';
   if (useGemini && apiKey) {
@@ -919,6 +1017,8 @@ async function buildMessage(template, contact, settings) {
 
 // ─── Follow-up Alarms ─────────────────────────────────────────────────────────
 async function setFollowup({ phone, timestamp }) {
+  const denied = await denyIfUnlicensed();
+  if (denied) return { success: false, error: denied };
   const alarmName = `followup-${phone}`;
   chrome.alarms.clear(alarmName);
   if (timestamp && timestamp > Date.now()) {
@@ -929,6 +1029,8 @@ async function setFollowup({ phone, timestamp }) {
 }
 
 async function clearFollowup({ phone }) {
+  const denied = await denyIfUnlicensed();
+  if (denied) return { success: false, error: denied };
   chrome.alarms.clear(`followup-${phone}`);
   return { success: true };
 }
@@ -954,6 +1056,7 @@ async function classifyReply(text, apiKey) {
 
 // ─── Birthday Auto-Sender ─────────────────────────────────────────────────────
 async function checkBirthdays() {
+  if (await denyIfUnlicensed()) { console.log('[WA] Birthday check skipped: no license'); return; }
   const stored = await chrome.storage.local.get(['contacts', 'settings']);
   const allContacts = stored.contacts || [];
   const settings = stored.settings || {};
@@ -1025,6 +1128,8 @@ async function getGeminiReply(instruction, userMessage, apiKey, chatHistory) {
 }
 
 async function getAIAutoReply({ text, prompt, apiKey, provider, chatHistory }) {
+  const denied = await denyIfUnlicensed();
+  if (denied) return { reply: null, error: denied };
   const key = (apiKey || '').trim();
   if (!key) return { reply: null, error: 'No API key' };
   const instruction = (prompt && prompt.trim()) ? prompt.trim() : DEFAULT_AI_AUTO_REPLY_PROMPT;
@@ -1061,6 +1166,8 @@ async function getAIAutoReply({ text, prompt, apiKey, provider, chatHistory }) {
 
 // ─── Drip Campaigns ───────────────────────────────────────────────────────────
 async function saveDripSeq({ sequence }) {
+  const denied = await denyIfUnlicensed();
+  if (denied) return { success: false, error: denied };
   const stored = await chrome.storage.local.get('drip_sequences');
   let seqs = stored.drip_sequences || [];
   const idx = seqs.findIndex(s => s.id === sequence.id);
@@ -1070,6 +1177,8 @@ async function saveDripSeq({ sequence }) {
 }
 
 async function deleteDripSeq({ id }) {
+  const denied = await denyIfUnlicensed();
+  if (denied) return { success: false, error: denied };
   const stored = await chrome.storage.local.get(['drip_sequences', 'drip_enrollments']);
   let seqs = (stored.drip_sequences || []).filter(s => s.id !== id);
   let enrolls = stored.drip_enrollments || [];
@@ -1085,6 +1194,8 @@ async function deleteDripSeq({ id }) {
 }
 
 async function enrollDrip({ contacts, seqId }) {
+  const denied = await denyIfUnlicensed();
+  if (denied) return { success: false, error: denied };
   const stored = await chrome.storage.local.get(['drip_sequences', 'drip_enrollments', 'dnc']);
   const seq = (stored.drip_sequences || []).find(s => s.id === seqId);
   if (!seq || !seq.steps?.length) return { success: false, error: 'Sequence not found or empty' };
@@ -1114,6 +1225,8 @@ async function enrollDrip({ contacts, seqId }) {
 }
 
 async function unenrollDrip({ phone, seqId }) {
+  const denied = await denyIfUnlicensed();
+  if (denied) return { success: false, error: denied };
   const phoneClean = (phone || '').replace(/[^0-9]/g, '');
   const stored = await chrome.storage.local.get('drip_enrollments');
   let enrolls = stored.drip_enrollments || [];
@@ -1125,11 +1238,15 @@ async function unenrollDrip({ phone, seqId }) {
 }
 
 async function getDrip() {
+  const denied = await denyIfUnlicensed();
+  if (denied) return { success: true, sequences: [], enrollments: [] };
   const stored = await chrome.storage.local.get(['drip_sequences', 'drip_enrollments']);
   return { success: true, sequences: stored.drip_sequences || [], enrollments: stored.drip_enrollments || [] };
 }
 
 async function executeDripStep(alarmName) {
+  const denied = await denyIfUnlicensed();
+  if (denied) { console.warn('[WA] Drip step skipped:', denied); return; }
   // alarm name: drip-{seqId}-{phone}-{stepIndex}
   const parts = alarmName.split('-');
   if (parts.length < 4) return;
@@ -1224,6 +1341,8 @@ async function sendWebhook(event, data, webhookUrl) {
 }
 
 async function testWebhook({ webhookUrl }) {
+  const denied = await denyIfUnlicensed();
+  if (denied) return { success: false, error: denied };
   if (!webhookUrl) return { success: false, error: 'No webhook URL provided' };
   const r = await sendWebhook('test', { message: 'WA Bulk AI test ping', ts: Date.now() }, webhookUrl);
   return r?.ok ? { success: true } : { success: false, error: `HTTP ${r?.status || 'error'}: ${r?.error || 'Request failed'}` };
@@ -1231,6 +1350,7 @@ async function testWebhook({ webhookUrl }) {
 
 // ─── Daily Business Digest ────────────────────────────────────────────────────
 async function generateDigest() {
+  if (await denyIfUnlicensed()) { console.log('[WA] Digest skipped: no license'); return; }
   const stored = await chrome.storage.local.get(['analytics', 'contacts', 'settings']);
   const settings = stored.settings || {};
   if (!settings.digestEnabled) { console.log('[WA] Digest disabled'); return; }
@@ -1315,6 +1435,8 @@ async function getGoogleMeetLink() {
 
 // ─── Meeting Alerts ───────────────────────────────────────────────────────────
 async function saveMeeting({ contactName, title, datetime, platform, link, alertMinutes }) {
+  const denied = await denyIfUnlicensed();
+  if (denied) return { success: false, error: denied };
   const id      = Date.now().toString();
   const meeting = { id, contactName, title, datetime, platform, link, alertMinutes, createdAt: Date.now() };
 
@@ -1348,6 +1470,7 @@ async function deleteMeeting({ id }) {
 }
 
 async function handleMeetingAlert(alarmName) {
+  if (await denyIfUnlicensed()) return;
   const id       = alarmName.replace('meeting-alert-', '');
   const stored   = await chrome.storage.local.get('scheduledMeetings');
   const meeting  = (stored.scheduledMeetings || []).find(m => m.id === id);
@@ -1394,6 +1517,8 @@ async function translateText({ text, targetLang = 'en' }) {
 
 // ─── Voice Note Transcription (Groq Whisper — Free) ──────────────────────────
 async function transcribeAudio({ base64, mimeType }) {
+  const denied = await denyIfUnlicensed();
+  if (denied) return { success: false, error: denied };
   const stored = await chrome.storage.local.get('settings');
   const apiKey = stored.settings?.groqApiKey;
   if (!apiKey) return { success: false, error: 'Groq API key not set. Add it in Settings → Groq Key.' };
