@@ -5,6 +5,7 @@
   "description": "AI-powered WhatsApp bulk messaging, quick sender, reply handler & analytics",
   "permissions": [
     "storage",
+    "unlimitedStorage",
     "sidePanel",
     "scripting",
     "tabs",

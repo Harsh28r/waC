@@ -4,6 +4,7 @@
 let campaignRunning = false;
 let shouldStop      = false;
 let waTabId         = null;
+const __waRecentSendGuard = new Map();
 
 // ─── Keepalive + Birthday Alarms ──────────────────────────────────────────────
 chrome.alarms.create('keepalive', { periodInMinutes: 0.4 });
@@ -141,7 +142,7 @@ async function startTrialIfEligible() {
 
 // ─── MAIN world on WA tab (CSP blocks content-script inline <script>) ───────────
 /** Bump when wa-page-main.js behavior changes — stale tabs otherwise keep old IIFE forever. */
-const WA_PAGE_MAIN_API_VERSION = 6;
+const WA_PAGE_MAIN_API_VERSION = 11;
 
 async function ensureWaPageMainApi(tabId) {
   let versionOk = false;
@@ -298,30 +299,31 @@ async function runCampaign(data) {
   shouldStop = false;
 
   const { contacts, template, templateB, abEnabled, settings } = data;
-  const imageUrl = data.imageUrl || null;
-  const imageMime = data.imageMime || 'image/jpeg';
-  const imageName = data.imageName || 'image.jpg';
+  const { imageUrl: resolvedUrl, imageMime, imageName, stagingKey } = await resolveInlineOrStagedMedia(data);
+  let imageUrl = resolvedUrl;
   console.log('[WA] Campaign start:', contacts.length, 'contacts, A/B:', abEnabled, imageUrl ? '(with media)' : '(text only)');
 
-  await broadcastProgress({ status: 'starting', total: contacts.length, currentIndex: 0 });
+  const campaignStartTime = Date.now();
+  await broadcastProgress({ status: 'starting', total: contacts.length, currentIndex: 0, campaignStartTime });
 
   try {
-    waTabId = await findOrCreateWATab(settings.stealthMode);
-  } catch (e) {
-    await broadcastProgress({ status: 'error', error: 'Cannot open WhatsApp Web: ' + e.message });
-    campaignRunning = false;
-    return;
-  }
+    try {
+      waTabId = await findOrCreateWATab(settings.stealthMode);
+    } catch (e) {
+      await broadcastProgress({ status: 'error', error: 'Cannot open WhatsApp Web: ' + e.message });
+      campaignRunning = false;
+      return;
+    }
 
-  await sleep(2000);
-  const results = [];
-  let aSent = 0, bSent = 0, aReplies = 0, bReplies = 0;
+    await sleep(2000);
+    const results = [];
+    let aSent = 0, bSent = 0, aReplies = 0, bReplies = 0;
 
-  // Load DNC list once before campaign
-  const dncStored = await chrome.storage.local.get('dnc');
-  const dncSet = new Set((dncStored.dnc || []).map(p => p.replace(/[^0-9]/g, '')));
+    // Load DNC list once before campaign
+    const dncStored = await chrome.storage.local.get('dnc');
+    const dncSet = new Set((dncStored.dnc || []).map(p => p.replace(/[^0-9]/g, '')));
 
-  for (let i = 0; i < contacts.length; i++) {
+    for (let i = 0; i < contacts.length; i++) {
     if (shouldStop) break;
     const contact = contacts[i];
 
@@ -352,58 +354,79 @@ async function runCampaign(data) {
 
     if (useB) bSent++; else aSent++;
 
-    results.push({ contact: contact.name || contact.phone, phone: contact.phone, status: result.success ? 'sent' : 'failed', error: result.error || null, message, variant });
+    // Detect invalid/not-found numbers vs other failures
+    const isInvalid = !result.success && result.error && (
+      result.error.includes('No search result') ||
+      result.error.includes('not found') ||
+      result.error.includes('Chat did not open')
+    );
+    const resultStatus = result.success ? 'sent' : (isInvalid ? 'invalid' : 'failed');
 
-    await broadcastProgress({ status: result.success ? 'sent' : 'failed', currentIndex: i, total: contacts.length, contact: contact.name || contact.phone, phone: contact.phone, variant, results: [...results] });
+    results.push({ contact: contact.name || contact.phone, phone: contact.phone, status: resultStatus, error: result.error || null, message, variant });
+
+    await broadcastProgress({ status: resultStatus, currentIndex: i, total: contacts.length, contact: contact.name || contact.phone, phone: contact.phone, variant, results: [...results], campaignStartTime });
 
     if (i < contacts.length - 1 && !shouldStop) {
       const delaySec = randomInt(settings.minDelay, settings.maxDelay);
       for (let s = delaySec; s > 0; s--) {
         if (shouldStop) break;
-        await broadcastProgress({ status: 'waiting', currentIndex: i, total: contacts.length, nextIn: s });
+        await broadcastProgress({ status: 'waiting', currentIndex: i, total: contacts.length, nextIn: s, campaignStartTime });
         await sleep(1000);
       }
     }
+    }
+
+    campaignRunning = false;
+
+    // Update analytics
+    await updateAnalytics(results, abEnabled ? { aSent, bSent, aReplies, bReplies } : null, settings.campaignName || '', template.substring(0, 80));
+
+    chrome.notifications.create({
+      type: 'basic',
+      iconUrl: 'icons/icon48.png',
+      title: 'WA Bulk AI — Campaign Complete',
+      message: `Sent ${results.filter(r => r.status === 'sent').length}/${results.length} messages`
+    });
+
+    await broadcastProgress({ status: 'completed', total: contacts.length, results, abStats: abEnabled ? { aSent, bSent } : null, campaignStartTime, campaignDurationMs: Date.now() - campaignStartTime });
+  } finally {
+    campaignRunning = false;
+    if (stagingKey) {
+      try {
+        await chrome.storage.local.remove(stagingKey);
+      } catch (_) {}
+    }
   }
-
-  campaignRunning = false;
-
-  // Update analytics
-  await updateAnalytics(results, abEnabled ? { aSent, bSent, aReplies, bReplies } : null, settings.campaignName || '', template.substring(0, 80));
-
-  // Notification
-  chrome.notifications.create({
-    type: 'basic',
-    iconUrl: 'icons/icon48.png',
-    title: 'WA Bulk AI — Campaign Complete',
-    message: `Sent ${results.filter(r => r.status === 'sent').length}/${results.length} messages`
-  });
-
-  await broadcastProgress({ status: 'completed', total: contacts.length, results, abStats: abEnabled ? { aSent, bSent } : null });
 }
 
 // ─── Quick Send ───────────────────────────────────────────────────────────────
 async function quickSend(data) {
   const { phone, message, stealthMode } = data;
-  const imageUrl = data.imageUrl || null;
-  const imageMime = data.imageMime || 'image/jpeg';
-  const imageName = data.imageName || 'image.jpg';
+  const { imageUrl: resolvedImg, imageMime, imageName, stagingKey } = await resolveInlineOrStagedMedia(data);
+  const imageUrl = resolvedImg;
   console.log('[WA] Quick send to:', phone, imageUrl ? '(with media)' : '(text only)');
 
-  // DNC check
   const dncStored = await chrome.storage.local.get('dnc');
   const phoneClean = (phone || '').replace(/[^0-9]/g, '');
   if ((dncStored.dnc || []).map(p => p.replace(/[^0-9]/g, '')).includes(phoneClean)) {
     return { success: false, error: 'DNC — this number has opted out' };
   }
 
-  const tabId = await findOrCreateWATab();
-  await sleep(1500);
-  const result = await sendWhatsAppMessage(tabId, phone, message || '', stealthMode || false, imageUrl || null, imageMime || 'image/jpeg', imageName || 'image.jpg');
-  if (imageUrl && !result.success && result.error) {
-    chrome.storage.local.set({ lastMediaError: result.error });
+  try {
+    const tabId = await findOrCreateWATab();
+    await sleep(1500);
+    const result = await sendWhatsAppMessage(tabId, phone, message || '', stealthMode || false, imageUrl || null, imageMime || 'image/jpeg', imageName || 'image.jpg');
+    if (imageUrl && !result.success && result.error) {
+      chrome.storage.local.set({ lastMediaError: result.error });
+    }
+    return result;
+  } finally {
+    if (stagingKey) {
+      try {
+        await chrome.storage.local.remove(stagingKey);
+      } catch (_) {}
+    }
   }
-  return result;
 }
 
 // ─── Schedule Campaign ────────────────────────────────────────────────────────
@@ -657,6 +680,12 @@ async function sendWhatsAppMessage(tabId, phone, message, stealthMode = false, i
   try {
     const phoneClean = phone.replace(/[^0-9]/g, '');
     if (!phoneClean) return { success: false, error: 'Invalid phone number' };
+    const sig = `${phoneClean}|${imageUrl ? 'M' : 'T'}|${String(message || '').trim()}`;
+    const now = Date.now();
+    const prev = __waRecentSendGuard.get(sig);
+    if (prev && (now - prev) < 15000) return { success: true, dedupGuard: true };
+    __waRecentSendGuard.set(sig, now);
+    const requestId = `wa_${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${phoneClean.slice(-6)}`;
 
     if (imageUrl) {
       const isVideo = (imageMime || '').startsWith('video/');
@@ -665,44 +694,57 @@ async function sendWhatsAppMessage(tabId, phone, message, stealthMode = false, i
       try {
         await chrome.storage.session.set({ waSendImage: payload });
       } catch (e) {
-        return { success: false, error: 'Image too large for session storage (~1MB/item limit). Compress or use a smaller file.' };
+        try {
+          await chrome.storage.local.set({ waSendImage: payload });
+        } catch (e2) {
+          return { success: false, error: 'Could not store image for send (too large or storage full). Compress the file or use a smaller image.' };
+        }
       }
-      await sleep(150);
-      const chatUrl = `https://web.whatsapp.com/send?phone=${phoneClean}`;
-      await chrome.tabs.update(tabId, { url: chatUrl, active: !stealthMode });
-      await sleep(1000);
-      await waitForTabLoad(tabId);
-      await sleep(isVideo ? 9000 : 8000);
-      // Large data URLs break chrome.tabs.sendMessage — content script reads chrome.storage.session only
+      await sleep(120);
+      // Fast path: in-tab navigation via sidebar search (no full WA reload)
       const dataLen = (payload.imageData || '').length;
-      const tabPayload = {
-        type: 'SEND_WITH_IMAGE',
+      const fastPayload = {
+        type: 'OPEN_AND_SEND',
+        requestId,
+        phone: phoneClean,
         imageKey: 'waSendImage',
         imageMime: payload.imageMime,
         imageName: payload.imageName,
-        caption: payload.caption
+        caption: payload.caption,
+        message: payload.caption
       };
-      if (dataLen < 120000) tabPayload.imageData = payload.imageData;
-      let response = await sendMessageToTab(tabId, tabPayload, 8);
-      // Never downgrade image/video sends to plain text.
-      // If media send fails, retry media once after a hard chat refresh.
+      if (dataLen < 120000) fastPayload.imageData = payload.imageData;
+      let response = await sendMessageToTab(tabId, fastPayload, 5);
+
+      // Fallback: hard nav — navigate via WA's own /send?phone URL (served from PWA cache,
+      // much faster than a cold load).  waitForWAReady() polls the PING handler so we don't
+      // waste the 8-9 s fixed sleep when WA boots in 2-3 s.
       if (!response || !response.success) {
         await chrome.tabs.update(tabId, { url: `https://web.whatsapp.com/send?phone=${phoneClean}`, active: !stealthMode });
-        await sleep(1200);
+        await sleep(800);
         await waitForTabLoad(tabId);
-        await sleep(isVideo ? 9000 : 8000);
-        response = await sendMessageToTab(tabId, tabPayload, 8);
+        await waitForWAReady(tabId, isVideo ? 18000 : 14000);
+        const navPayload = {
+          type: 'SEND_WITH_IMAGE',
+          requestId,
+          imageKey: 'waSendImage',
+          imageMime: payload.imageMime,
+          imageName: payload.imageName,
+          caption: payload.caption
+        };
+        if (dataLen < 120000) navPayload.imageData = payload.imageData;
+        response = await sendMessageToTab(tabId, navPayload, 8);
       }
       return response || { success: false, error: 'No response from WA page — is WA Web logged in?' };
     }
 
-    const url = `https://web.whatsapp.com/send?phone=${phoneClean}`;
-    await chrome.tabs.update(tabId, { url, active: !stealthMode });
-    await sleep(800);
-    await waitForTabLoad(tabId);
-    await sleep(5000);
-    const response = await sendMessageToTab(tabId, { type: 'TYPE_AND_SEND', message }, 5);
-    return response || { success: false, error: 'No response from WA page — is WA Web logged in?' };
+    // Text: one OPEN_AND_SEND only — retries here re-ran full type+send and caused double messages.
+    const response = await sendMessageToTab(
+      tabId,
+      { type: 'OPEN_AND_SEND', requestId, phone: phoneClean, message: message || '' },
+      5
+    );
+    return response || { success: false, error: 'Could not send — check WA Web is open and logged in' };
   } catch (e) {
     return { success: false, error: e.message };
   }
@@ -714,7 +756,7 @@ async function sendMessageToTab(tabId, message, retries = 3) {
       return await chrome.tabs.sendMessage(tabId, message);
     } catch (e) {
       console.warn(`[WA] Tab msg attempt ${i}/${retries} failed:`, e.message);
-      if (i < retries) await sleep(2000);
+      if (i < retries) await sleep(600);
     }
   }
   return null;
@@ -739,6 +781,21 @@ async function waitForTabLoad(tabId, timeout = 25000) {
   });
 }
 
+/** Poll content script PING until WA is ready (replaces fixed sleep after hard-nav reload).
+ *  WA loads from PWA cache in ~2-4 s — no reason to wait 8-9 s unconditionally. */
+async function waitForWAReady(tabId, maxMs = 18000) {
+  const deadline = Date.now() + maxMs;
+  await sleep(1500); // minimum boot time
+  while (Date.now() < deadline) {
+    try {
+      const r = await chrome.tabs.sendMessage(tabId, { type: 'PING' });
+      if (r?.ready) return true;
+    } catch (_) {}
+    await sleep(700);
+  }
+  return false;
+}
+
 async function findOrCreateWATab(stealthMode = false) {
   const tabs = await chrome.tabs.query({ url: 'https://web.whatsapp.com/*' });
   if (tabs.length > 0) {
@@ -752,12 +809,58 @@ async function findOrCreateWATab(stealthMode = false) {
 }
 
 // ─── AI Personalization ───────────────────────────────────────────────────────
+function escapeRegExp(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Trim odd whitespace from templates so Lexical does not echo blocks; \n\n\n+ often reads as “repeated” promo. */
+function normalizeCampaignMessage(s) {
+  return String(s || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/\u2028/g, '\n')
+    .replace(/\u2029/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n[ \t]+/g, '\n')
+    .trimEnd();
+}
+
+async function resolveInlineOrStagedMedia(data) {
+  let imageUrl = data.imageUrl || null;
+  let imageMime = data.imageMime || 'image/jpeg';
+  let imageName = data.imageName || 'image.jpg';
+  const key = data.imageStagingKey || null;
+  if (key) {
+    try {
+      const r = await chrome.storage.local.get(key);
+      const p = r[key];
+      if (p?.imageData) {
+        imageUrl = p.imageData;
+        imageMime = p.imageMime || imageMime;
+        imageName = p.imageName || imageName;
+      }
+    } catch (_) {}
+  }
+  return { imageUrl, imageMime, imageName, stagingKey: key };
+}
+
+function fillTemplateValue(v) {
+  if (v == null) return '';
+  if (Array.isArray(v)) return v.map(x => (x == null ? '' : String(x))).join(', ');
+  if (typeof v === 'object') return '';
+  return String(v);
+}
+
+/** Placeholder fill — use function replacer so values with `$` / `$$` / `$&` don't duplicate text. */
 function fillTemplate(template, contact) {
   let msg = template;
   for (const [k, v] of Object.entries(contact)) {
-    if (v != null) msg = msg.replace(new RegExp(`\\{${k}\\}`, 'gi'), String(v));
+    if (!k || typeof k !== 'string') continue;
+    const repl = fillTemplateValue(v);
+    msg = msg.replace(new RegExp(`\\{${escapeRegExp(k)}\\}`, 'gi'), () => repl);
   }
-  return msg;
+  return normalizeCampaignMessage(msg);
 }
 
 async function buildMessage(template, contact, settings) {
@@ -777,7 +880,7 @@ async function buildMessage(template, contact, settings) {
 
   const useGemini = (settings.aiProvider || 'gemini') === 'gemini';
   const apiKey = useGemini ? (settings.geminiApiKey || '') : (settings.apiKey || '');
-  if (!settings.aiEnabled || !apiKey) return base;
+  if (!settings.aiEnabled || !apiKey) return normalizeCampaignMessage(base);
 
   const prompt = `Personalize this WhatsApp message for the contact. Make it feel natural and personal. Keep the same intent. Max 300 chars. Return ONLY the message.\n\nContact: ${JSON.stringify(contact)}\n\nMessage:\n${base}`;
   try {
@@ -794,7 +897,7 @@ async function buildMessage(template, contact, settings) {
       const d = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(d.error?.message || 'API ' + res.status);
       const raw = d.candidates?.[0]?.content?.parts?.[0]?.text;
-      return (raw && typeof raw === 'string') ? raw.trim() : base;
+      return normalizeCampaignMessage((raw && typeof raw === 'string') ? raw.trim() : base);
     }
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -807,10 +910,10 @@ async function buildMessage(template, contact, settings) {
     });
     if (!res.ok) throw new Error('API ' + res.status);
     const d = await res.json();
-    return d.content?.[0]?.text?.trim() || base;
+    return normalizeCampaignMessage(d.content?.[0]?.text?.trim() || base);
   } catch (e) {
     console.warn('[WA] AI failed:', e.message);
-    return base;
+    return normalizeCampaignMessage(base);
   }
 }
 

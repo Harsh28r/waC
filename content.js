@@ -71,6 +71,13 @@ const SEL = {
     'span[data-icon="new-chat-outline"]'
   ],
   searchInput: [
+    // WA Web 2025: search is a native <input>, no data-testid on sidebar elements
+    'input[placeholder="Search name or number"]',      // new-chat panel
+    'input[placeholder="Search or start a new chat"]', // main sidebar search
+    'input[aria-label="Search name or number"]',
+    'input[aria-label="Search or start a new chat"]',
+    'input[data-tab="3"]',                             // fallback — both inputs share data-tab=3
+    // Legacy / older WA Web builds
     '[data-testid="search-input"]',
     'div[contenteditable][data-tab="3"]',
     '[aria-label="Search input textbox"]'
@@ -266,34 +273,124 @@ async function getUnreadContacts() {
 }
 
 // ─── Navigate to a phone number using WA sidebar search (no page reload) ──────
+// Live-tested against WA Web 2025: search inputs are <input> (NOT contenteditable),
+// result rows are div[role="button"][tabindex="0"], no data-testid on sidebar items.
 async function openChatByPhone(phone) {
   if (findEl(SEL.qrCode)) return { success: false, error: 'WA Web not logged in — scan QR first' };
 
-  // Dismiss any open dialog / chat
+  const digits = String(phone).replace(/\D/g, '');
+
+  // ── Input setter for WA search <input> elements ──────────────────────────
+  // execCommand('insertText') is the ONLY method that reliably triggers WA's
+  // server-side phone lookup. React native setter + 'input' event does NOT.
+  // Live-tested 2025: result appears ~4s with execCommand, never with native setter.
+  function setReactInputValue(input, value) {
+    input.focus();
+    // Clear any existing content first
+    document.execCommand('selectAll', false, null);
+    document.execCommand('delete', false, null);
+    // Insert text — fires native beforeinput/input events WA's React handler needs
+    const ok = document.execCommand('insertText', false, value);
+    if (!ok) {
+      // Fallback: native setter + input event
+      try {
+        const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+        nativeSetter.call(input, value);
+      } catch (_) { try { input.value = value; } catch (__) {} }
+      input.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+    }
+  }
+
+  // ── Pick the best result button from live DOM ─────────────────────────────
+  // WA 2025: results are div[role="button"] — no size filter needed (causes misses
+  // in virtual lists). Match on last 10 digits of the target number.
+  function pickResultBtn() {
+    const tail = digits.slice(-10); // last 10 digits — specific enough, avoids false positives
+    const btns = Array.from(document.querySelectorAll('div[role="button"]'));
+    return btns.find(b => (b.innerText || b.textContent || '').replace(/\D/g, '').includes(tail))
+      || null;
+  }
+
+  // ── Reset WA state (close any open panels/modals) ────────────────────────
+  // Only one ESC — multiple ESCs or ESC too close to newChatBtn.click() prevents panel opening
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
   await sleep(400);
 
-  // Click "New chat" icon to open the search pane
-  const newChatBtn = findEl(SEL.newChatBtn);
-  if (newChatBtn) { newChatBtn.click(); await sleep(700); }
+  // ── Strategy 1: New Chat panel (shows "unknown number" rows too) ──────────
+  // Panel search input has placeholder "Search name or number"
+  const newChatBtn = document.querySelector('button[aria-label="New chat"]')
+    || document.querySelector('button[data-tab="2"]')
+    || findEl(SEL.newChatBtn);
 
-  // Find the search input
-  const searchInput = await waitForEl(SEL.searchInput, 6000);
-  if (!searchInput) return { success: false, error: 'Search input not found' };
+  let resultBtn = null;
 
-  // Clear and type the phone number
-  searchInput.focus();
-  document.execCommand('selectAll', false, null);
-  document.execCommand('delete', false, null);
-  await sleep(200);
-  document.execCommand('insertText', false, phone);
-  await sleep(2200); // wait for search results
+  if (newChatBtn) {
+    newChatBtn.click();
+    await sleep(850); // ≥800ms required — panel input not ready before this (live-tested)
 
-  // Click the first result (contact or "Message +XXXX")
-  const firstResult = document.querySelector('[data-testid="cell-frame-container"]');
-  if (!firstResult) return { success: false, error: 'No search result for ' + phone };
-  firstResult.click();
-  await sleep(1500);
+    const panelInput = document.querySelector('input[placeholder*="Search name"]')
+      || document.querySelector('input[placeholder*="name or number"]');
+
+    if (panelInput) {
+      // Set value ONCE — re-firing resets WA's server lookup and the result never arrives
+      setReactInputValue(panelInput, phone);
+
+      // WA does a server-side number lookup (~800-1200ms). Poll until result appears.
+      const deadline1 = Date.now() + 5000;
+      while (Date.now() < deadline1) {
+        resultBtn = pickResultBtn();
+        if (resultBtn) break;
+        await sleep(200);
+      }
+
+      // Retry with + prefix for international numbers
+      if (!resultBtn && !String(phone).startsWith('+')) {
+        setReactInputValue(panelInput, '+' + phone);
+        const deadline2 = Date.now() + 3000;
+        while (Date.now() < deadline2) {
+          resultBtn = pickResultBtn();
+          if (resultBtn) break;
+          await sleep(200);
+        }
+      }
+    }
+  }
+
+  // ── Strategy 2: Main sidebar search bar ──────────────────────────────────
+  // Works for existing conversations; placeholder "Search or start a new chat"
+  if (!resultBtn) {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
+    await sleep(250);
+
+    const mainInput = document.querySelector('input[placeholder*="Search or start"]')
+      || document.querySelector('input[placeholder*="Search"]')
+      || document.querySelector('input[data-tab="3"]');
+
+    if (mainInput) {
+      setReactInputValue(mainInput, phone);
+      const deadline3 = Date.now() + 3000;
+      while (Date.now() < deadline3) {
+        // Main search shows role="row" grid cells AND role="button" items
+        const rows = Array.from(document.querySelectorAll('[role="row"]'))
+          .filter(r => (r.innerText || r.textContent || '').replace(/\D/g, '').includes(digits.slice(-8)));
+        if (rows.length) { resultBtn = rows[0]; break; }
+        resultBtn = pickResultBtn();
+        if (resultBtn) break;
+        await sleep(130);
+      }
+    }
+  }
+
+  if (!resultBtn) return { success: false, error: 'No search result for ' + phone };
+
+  resultBtn.click();
+
+  const opened = await waitForEl(['#main header', '#main [data-testid="conversation-header"]'], 5000);
+  if (!opened) return { success: false, error: 'Chat did not open for ' + phone };
+
+  // Close any leftover search/panel so next navigation starts clean
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
+
   return { success: true };
 }
 
@@ -343,28 +440,80 @@ async function sendWithCaption(caption) {
   return { success: true };
 }
 
-// ─── Insert text with proper line-break handling for WA Lexical editor ─────────
+// ─── Insert text (WA Lexical): MAIN-world compose insert (execCommand works there). Isolated world
+// often no-ops; never set textContent on the editor (destroys Lexical). Caption/dialog: one paste only (no paste+fallback race).
+function _plainToPasteHtml(value) {
+  const esc = (s) =>
+    String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const lines = _normalizeWaMessageText(value).split('\n');
+  return '<meta charset="utf-8">' + lines.map((l) => '<div>' + esc(l) + '</div>').join('');
+}
+
+function _isFooterComposeEl(el) {
+  return !!(el && el.closest && el.closest('#main footer'));
+}
+
+function _normalizeWaMessageText(s) {
+  return String(s || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/\u2028/g, '\n')
+    .replace(/\u2029/g, '\n');
+}
+
 async function insertMessageText(el, text) {
-  const lines = text.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i]) {
-      document.execCommand('insertText', false, lines[i]);
-      await sleep(30);
-    }
-    if (i < lines.length - 1) {
-      // Shift+Enter = line break in WA (plain Enter sends the message)
-      el.dispatchEvent(new KeyboardEvent('keydown',  { key: 'Enter', code: 'Enter', shiftKey: true, bubbles: true, cancelable: true }));
-      el.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', shiftKey: true, bubbles: true, cancelable: true }));
-      el.dispatchEvent(new KeyboardEvent('keyup',    { key: 'Enter', code: 'Enter', shiftKey: true, bubbles: true, cancelable: true }));
-      await sleep(30);
-    }
+  const value = _normalizeWaMessageText(text);
+  if (!el) return;
+  if (_isFooterComposeEl(el)) {
+    const mw = await waPageMain('insertComposeText', [value]);
+    await sleep(value.includes('\n') ? 420 : 120);
+    // Never fall back to a second paste when MAIN ran — async Lexical could lag and `ok` lie, which duplicated promos.
+    if (mw && mw.found !== false) return;
   }
+  el.focus();
+  await sleep(80);
+  try {
+    document.execCommand('selectAll', false, null);
+    document.execCommand('delete', false, null);
+  } catch (_) {}
+  await sleep(50);
+  try {
+    const dt = new DataTransfer();
+    dt.setData('text/plain', value);
+    dt.setData('text/html', _plainToPasteHtml(value));
+    el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+  } catch (_) {}
+  await sleep(400);
 }
 
 // ─── Send Image or Video from base64 data with caption ───────────────────────
 const WA_MEDIA_DEBUG = true; // set false to silence
 function _mediaLog(...a) { if (WA_MEDIA_DEBUG) console.warn('[WA-MEDIA]', ...a); }
 async function _storeMediaError(err) { try { await chrome.storage.local.set({ lastMediaError: String(err) }); } catch (_) {} }
+const __waSentReqIds = new Map();
+const __waInFlightReqIds = new Set();
+function _alreadySentReq(reqId) {
+  if (!reqId) return false;
+  const now = Date.now();
+  for (const [k, ts] of __waSentReqIds.entries()) {
+    if (now - ts > 120000) __waSentReqIds.delete(k);
+  }
+  return __waSentReqIds.has(reqId);
+}
+function _markSentReq(reqId) {
+  if (!reqId) return;
+  __waSentReqIds.set(reqId, Date.now());
+}
+function _beginReq(reqId) {
+  if (!reqId) return true;
+  if (__waInFlightReqIds.has(reqId) || _alreadySentReq(reqId)) return false;
+  __waInFlightReqIds.add(reqId);
+  return true;
+}
+function _endReq(reqId) {
+  if (!reqId) return;
+  __waInFlightReqIds.delete(reqId);
+}
 
 /** Pass huge base64 to main-world <script> via shared DOM — embedding in script text breaks Chrome (size / parse). */
 const WA_B64_HOLDER_ID = '__wa_ext_media_b64_hold';
@@ -607,28 +756,49 @@ async function sendImageWithCaption(imageData, imageMime, imageName, caption) {
     if (t10 && !t10.closest('footer')) return t10;
     return null;
   };
-  if (caption && String(caption).trim()) {
-    const captionText = String(caption).trim();
+  const captionRaw = String(caption || '').replace(/\r\n/g, '\n');
+  if (caption && captionRaw.trim()) {
+    const captionText = captionRaw;
     _mediaLog('inserting caption:', captionText.slice(0, 50));
 
     // Wait up to 2s for caption input to appear (it may render slightly after media preview)
     let captionInserted = false;
-    for (let _ci = 0; _ci < 10 && !captionInserted; _ci++) {
-      await sleep(200);
+    for (let _ci = 0; _ci < 3 && !captionInserted; _ci++) {
+      await sleep(220);
       const res = await waPageMain('insertCaption', [captionText]);
       _mediaLog('caption insert attempt', _ci, JSON.stringify(res));
-      if (res?.found && res?.inserted) { captionInserted = true; break; }
+      if (res?.found && res?.ok) { captionInserted = true; break; }
+      // Lexical updates the DOM asynchronously — if MAIN world found the element, wait a
+      // beat and verify the DOM directly before deciding to retry.  Without this pause the
+      // loop fires again before Lexical re-renders, re-inserts the text, and the caption
+      // ends up duplicated / tripled.
+      if (res?.found) {
+        await sleep(220);
+        const verEl = _findCaptionEl();
+        if (verEl && (verEl.innerText || verEl.textContent || '').replace(/\s/g, '')) {
+          _mediaLog('caption verified in DOM after Lexical lag, skipping retry');
+          captionInserted = true; break;
+        }
+      }
     }
 
-    // Fallback: content-script execCommand if main-world failed
+    // Fallback: isolated-world paste — only run when MAIN world never found the element at
+    // all (res.found was false every time).  If MAIN world did find and dispatch the insert,
+    // trust it; running a second paste here is what caused text to appear multiple times.
     if (!captionInserted) {
-      _mediaLog('main-world caption failed, trying content-script execCommand');
+      _mediaLog('main-world caption failed, trying content-script insertMessageText');
       const captionEl = _findCaptionEl();
       if (captionEl) {
-        captionEl.focus();
-        await sleep(300);
-        document.execCommand('selectAll', false, null);
-        document.execCommand('insertText', false, captionText);
+        // Only insert via fallback if the element is genuinely empty
+        const alreadyHasText = !!(captionEl.innerText || captionEl.textContent || '').trim();
+        if (!alreadyHasText) {
+          try {
+            document.execCommand('selectAll', false, null);
+            document.execCommand('delete', false, null);
+          } catch (_) {}
+          await sleep(80);
+          await insertMessageText(captionEl, captionText);
+        }
         captionInserted = !!(captionEl.innerText || captionEl.textContent || '').trim();
         _mediaLog('content-script caption result, inserted:', captionInserted);
       }
@@ -807,7 +977,11 @@ function setWAPrivacy(on) {
 
 // Restore privacy state if page was reloaded
 chrome.storage.local.get('privacyOn', d => {
-  if (d.privacyOn) setWAPrivacy(true);
+  if (d.privacyOn) {
+    setWAPrivacy(true);
+    // Sync eye button once the bar is injected (small delay for DOM)
+    setTimeout(() => _syncPrivacyBtn(true), 1500);
+  }
 });
 
 // ─── Auto Reply Bot ───────────────────────────────────────────────────────────
@@ -1024,7 +1198,8 @@ async function checkAndReply() {
   arReplying = false;
 }
 
-async function typeAndSend(text) {
+async function typeAndSend(text, reqId) {
+  if (_alreadySentReq(reqId)) return true;
   // Scope strictly to the chat compose area — NOT the search bar
   const input =
     document.querySelector('#main footer [data-lexical-editor="true"]') ||
@@ -1037,26 +1212,17 @@ async function typeAndSend(text) {
   input.focus();
   await sleep(300);
 
-  // Method 1: DataTransfer paste — works with WhatsApp Web's Lexical editor
   try {
-    const dt = new DataTransfer();
-    dt.setData('text/plain', text);
-    input.dispatchEvent(new ClipboardEvent('paste', {
-      clipboardData: dt,
-      bubbles: true,
-      cancelable: true
-    }));
-  } catch (e) {}
+    document.execCommand('selectAll', false, null);
+    document.execCommand('delete', false, null);
+  } catch (_) {}
+  await sleep(80);
 
-  await sleep(500);
-
-  // Method 2: execCommand fallback if paste didn't insert anything
-  if (!input.innerText?.trim()) {
-    document.execCommand('insertText', false, text);
-    await sleep(500);
-  }
+  await insertMessageText(input, String(text || ''));
+  await sleep(250);
 
   const result = await clickSend();
+  if (result.success) _markSentReq(reqId);
   return result.success;
 }
 
@@ -1068,15 +1234,7 @@ async function insertText(text) {
     document.querySelector('#main div[contenteditable="true"][data-tab="10"]') ||
     document.querySelector('div[contenteditable="true"][data-tab="10"]');
   if (!input) return false;
-  input.focus();
-  await sleep(100);
-  try {
-    const dt = new DataTransfer();
-    dt.setData('text/plain', text);
-    input.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
-  } catch (e) {
-    document.execCommand('insertText', false, text);
-  }
+  await insertMessageText(input, text);
   return true;
 }
 
@@ -1218,6 +1376,27 @@ function injectQuickReplyStrip() {
   }
   // Keep ⚡ button in sync
   document.getElementById('wa-qr-btn')?.classList.toggle('active', stripVisible);
+}
+
+// ── Hide quick-reply strip while a WA reply/quote preview is open ──────────────
+// The reply preview is a direct #main child with order:2 that overflows downward
+// into the strip area via an absolutely-positioned inner "Quoted message" div.
+let _replyPreviewObserver = null;
+function watchReplyPreview() {
+  const main = document.getElementById('main');
+  if (!main || main.dataset.waQrReplyWatcher) return;
+  main.dataset.waQrReplyWatcher = '1';
+
+  function syncStrip() {
+    const strip = document.getElementById(STRIP_ID);
+    if (!strip) return;
+    const hasReply = !!document.querySelector('#main [aria-label="Quoted message"]');
+    strip.classList.toggle('wqrs-reply-active', hasReply);
+  }
+
+  _replyPreviewObserver = new MutationObserver(syncStrip);
+  _replyPreviewObserver.observe(main, { childList: true });
+  syncStrip();
 }
 
 async function toggleQuickReplyStrip() {
@@ -1436,11 +1615,11 @@ let meetingBtnObserver = null;
 
 function injectMeetingStyles() {
   const existing = document.getElementById('wa-meeting-styles');
-  if (existing && existing.dataset.v === '2') return;
+  if (existing && existing.dataset.v === '9') return;
   if (existing) existing.remove();
   const style = document.createElement('style');
   style.id = 'wa-meeting-styles';
-  style.dataset.v = '2';
+  style.dataset.v = '9';
   style.textContent = `
     #wa-meeting-bar {
       display: flex !important;
@@ -1629,7 +1808,7 @@ function injectMeetingStyles() {
       margin-left: 6px;
       vertical-align: middle;
     }
-    /* #wa-qr-btn, #wa-card-btn, #wa-export-btn use .wa-icon-btn */
+    /* #wa-qr-btn uses .wa-icon-btn */
     /* ── Quick Reply Panel ── */
     #wa-qr-panel {
       position: fixed;
@@ -1707,8 +1886,10 @@ function injectMeetingStyles() {
       position: relative;
       z-index: 100;
       pointer-events: auto;
+      order: 3;
     }
     #wa-qr-strip.wqrs-open { display: flex; }
+    #wa-qr-strip.wqrs-reply-active { display: none !important; }
     #wa-qr-strip * { pointer-events: auto; }
     .wqrs-row {
       display: flex;
@@ -1865,7 +2046,6 @@ function injectMeetingStyles() {
     }
     .wa-label-chip.active { background: #005c4b; color: #00a884; border-color: #00a884; }
     .wa-label-chip:hover:not(.active) { background: #3b4a54; color: #e9edef; }
-    /* #wa-card-btn, #wa-export-btn use .wa-icon-btn */
     /* ── Contact Card Panel ── */
     #wa-card-panel {
       position: fixed; background: #202c33; border: 1px solid #3b4a54;
@@ -1956,6 +2136,38 @@ function injectMeetingStyles() {
     .wa-pin-btn.wa-pin-visible { opacity: 1; }
     .wa-pin-btn.pinned { opacity: 1 !important; color: #00a884 !important; background: rgba(0,168,132,.15) !important; }
     .wa-pin-btn:hover  { color: #00a884 !important; background: rgba(0,168,132,.25) !important; }
+
+    /* ── Privacy Eye button active state ── */
+    #wa-privacy-btn.active { background: #2a3942 !important; color: #00a884 !important; }
+
+    /* ── Schedule Meeting Floating Button ── */
+    #wa-meet-fab {
+      position: fixed;
+      display: none;
+      align-items: center;
+      gap: 7px;
+      background: #005c4b;
+      color: #00a884;
+      border: 1.5px solid #00a884;
+      border-radius: 22px;
+      padding: 8px 16px 8px 11px;
+      font-size: 12px;
+      font-weight: 700;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      cursor: pointer;
+      z-index: 9990;
+      box-shadow: 0 4px 20px rgba(0,168,132,0.28);
+      transition: background 0.15s, transform 0.1s, box-shadow 0.15s;
+      white-space: nowrap;
+      letter-spacing: 0.2px;
+    }
+    #wa-meet-fab.wfab-on { display: flex; }
+    #wa-meet-fab:hover {
+      background: #006e5c;
+      box-shadow: 0 6px 24px rgba(0,168,132,0.4);
+      transform: translateY(-1px);
+    }
+    #wa-meet-fab:active { transform: scale(0.97); }
   `;
   document.head.appendChild(style);
 }
@@ -2216,61 +2428,109 @@ async function sendMeetingInvite() {
   }
 }
 
-// ── Meeting bar: inject directly into WA header DOM (before call buttons) ────
+// ── Meeting bar: inject into LEFT sidebar header (before new-chat / 3-dot icons) ──
 function positionMeetingBar() {
-  const bar    = document.getElementById('wa-meeting-bar');
-  const header = document.querySelector('#main header');
+  const bar = document.getElementById('wa-meeting-bar');
   if (!bar) return;
-  if (!header) { bar.style.display = 'none'; return; }
 
-  // Find the right-side action container inside the header
-  // WA's header has a flex row; the right side holds call/search/menu buttons
-  const callBtn =
-    header.querySelector('[data-testid="audio-call"]') ||
-    header.querySelector('[data-testid="video-call"]') ||
-    header.querySelector('[data-icon="audio-call"]') ||
-    header.querySelector('[data-icon="video-call"]') ||
-    header.querySelector('[data-testid="search"]') ||
-    header.querySelector('[data-icon="search"]');
+  // Anchor: the new-chat button lives in the LEFT sidebar header
+  const newChatBtn =
+    document.querySelector('[data-testid="new-chat-btn"]') ||
+    document.querySelector('button[aria-label="New chat"]') ||
+    document.querySelector('[title="New chat"]') ||
+    document.querySelector('span[data-icon="new-chat-outline"]');
 
-  // Find the parent container that holds all the right-side buttons
-  let actionsContainer = null;
-  if (callBtn) {
-    // Walk up to find the flex container that holds all action buttons
-    actionsContainer = callBtn.closest('[role="group"]') ||
-                       callBtn.closest('div:has(> [data-testid])') ||
-                       callBtn.parentElement;
-  } else {
-    // Try common header container selectors
-    actionsContainer =
-      header.querySelector('[data-testid="conversation-header-actions"]') ||
-      header.querySelector('[role="group"]');
+  if (!newChatBtn) { bar.style.display = 'none'; return; }
+
+  // Walk ALL the way up until the direct child of HEADER.
+  // WA sidebar: HEADER > DIV(flex-row) > [logo-div | icons-span]
+  // That direct child of HEADER is the flex row itself.
+  let el = newChatBtn;
+  while (el.parentElement && el.parentElement.tagName !== 'HEADER') {
+    el = el.parentElement;
   }
+  if (!el.parentElement) { bar.style.display = 'none'; return; }
 
-  // If bar isn't already in the header, move it there
-  if (actionsContainer && bar.parentElement !== actionsContainer) {
+  // el = direct child of HEADER (the flex row DIV)
+  const flexRow = el; // DIV containing [logo | icons]
+  const header  = el.parentElement;
+
+  // Insert before the last child of the flex row (the icons group [+][⋮])
+  // so our bar sits between the WA logo and the native icons.
+  const iconsGroup = flexRow.children.length > 1
+    ? flexRow.lastElementChild
+    : null;
+
+  // If flexRow only has 1 child, fall back: insert bar directly in HEADER before el
+  const [insertParent, insertBefore] = iconsGroup
+    ? [flexRow, iconsGroup]
+    : [header, el];
+
+  if (bar.parentElement !== insertParent) {
     bar.style.position = 'relative';
     bar.style.top  = '';
     bar.style.left = '';
-    // Insert before the first child of the actions container (left of call buttons)
-    if (callBtn && actionsContainer.contains(callBtn)) {
-      // Insert before the call button's direct-child ancestor in the container
-      let ref = callBtn;
-      while (ref.parentElement !== actionsContainer) ref = ref.parentElement;
-      actionsContainer.insertBefore(bar, ref);
-    } else {
-      actionsContainer.insertBefore(bar, actionsContainer.firstChild);
-    }
-    bar.style.display = 'flex';
-  } else if (!actionsContainer) {
-    // Absolute fallback: if we can't find the action container, keep fixed position
-    const hRect = header.getBoundingClientRect();
-    const barW  = bar.offsetWidth || 130;
-    bar.style.position = 'fixed';
-    bar.style.display  = 'flex';
-    bar.style.top      = (hRect.top + (hRect.height - 26) / 2) + 'px';
-    bar.style.left     = (hRect.right - barW - 200) + 'px';
+    insertParent.insertBefore(bar, insertBefore);
   }
+  bar.style.display = 'flex';
+}
+
+// ── Privacy eye button — delegates to the existing setWAPrivacy() engine ───────
+const SVG_EYE_ON  = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><ellipse cx="8" cy="8" rx="6.5" ry="4" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.3"/></svg>`;
+const SVG_EYE_OFF = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M2 3l12 10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M4.5 5.2C3.1 6 2 7 1.5 8c1 2.2 3.8 4 6.5 4a7 7 0 002.5-.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M7 4.1A7 7 0 018 4c2.7 0 5.5 1.8 6.5 4a7.4 7.4 0 01-2 2.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.3"/></svg>`;
+
+function _syncPrivacyBtn(isOn) {
+  const btn = document.getElementById('wa-privacy-btn');
+  if (!btn) return;
+  btn.innerHTML   = isOn ? SVG_EYE_OFF : SVG_EYE_ON;
+  btn.dataset.tip = isOn ? 'Privacy ON — click to show' : 'Privacy Mode';
+  btn.classList.toggle('active', isOn);
+}
+
+function togglePrivacyMode() {
+  const isOn = !privacyStyleEl; // privacyStyleEl exists = currently ON
+  setWAPrivacy(isOn);
+  chrome.storage.local.set({ privacyOn: isOn });
+  _syncPrivacyBtn(isOn);
+}
+
+// ── Schedule Meeting FAB (floating above quick-reply strip in open chat) ───────
+const SVG_CAL_FAB = `<svg width="15" height="15" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="3" width="13" height="11.5" rx="1.5" stroke="currentColor" stroke-width="1.4"/><path d="M1.5 6.5h13" stroke="currentColor" stroke-width="1.4"/><path d="M5 1.5V4M11 1.5V4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="5.5" cy="9.5" r=".75" fill="currentColor"/><circle cx="8" cy="9.5" r=".75" fill="currentColor"/><circle cx="10.5" cy="9.5" r=".75" fill="currentColor"/><circle cx="5.5" cy="12" r=".75" fill="currentColor"/><circle cx="8" cy="12" r=".75" fill="currentColor"/></svg>`;
+
+function positionMeetingFAB() {
+  const fab    = document.getElementById('wa-meet-fab');
+  const footer = document.querySelector('#main footer');
+  const main   = document.getElementById('main');
+  if (!fab) return;
+  if (!footer || !main) { fab.classList.remove('wfab-on'); return; }
+
+  const footerRect = footer.getBoundingClientRect();
+  const strip      = document.getElementById('wa-qr-strip');
+  const stripH     = (strip && strip.classList.contains('wqrs-open'))
+                       ? (strip.getBoundingClientRect().height || 0) : 0;
+  const mainRect   = main.getBoundingClientRect();
+
+  // Sit above the footer (+ strip if open), aligned to right edge of #main
+  fab.style.bottom = (window.innerHeight - footerRect.top + stripH + 14) + 'px';
+  fab.style.right  = (window.innerWidth - mainRect.right + 18) + 'px';
+  fab.classList.add('wfab-on');
+}
+
+function injectMeetingFAB() {
+  if (!document.getElementById('main')) {
+    // No open chat — hide fab if it exists
+    document.getElementById('wa-meet-fab')?.classList.remove('wfab-on');
+    return;
+  }
+  let fab = document.getElementById('wa-meet-fab');
+  if (!fab) {
+    fab = document.createElement('button');
+    fab.id = 'wa-meet-fab';
+    fab.innerHTML = SVG_CAL_FAB + '<span>Schedule Meeting</span>';
+    fab.addEventListener('click', e => { e.stopPropagation(); openMeetingModal(); });
+    document.body.appendChild(fab);
+  }
+  positionMeetingFAB();
 }
 
 function ensureMeetingBar() {
@@ -2295,18 +2555,10 @@ function ensureMeetingBar() {
       return b;
     };
 
-    const SVG_CAL  = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="3" width="13" height="11.5" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M1.5 6.5h13" stroke="currentColor" stroke-width="1.3"/><path d="M5 1.5V4M11 1.5V4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="5.5" cy="9.5" r=".7" fill="currentColor"/><circle cx="8" cy="9.5" r=".7" fill="currentColor"/><circle cx="10.5" cy="9.5" r=".7" fill="currentColor"/><circle cx="5.5" cy="12" r=".7" fill="currentColor"/><circle cx="8" cy="12" r=".7" fill="currentColor"/></svg>`;
     const SVG_BOLT = `<svg width="13" height="13" viewBox="0 0 14 14" fill="currentColor"><path d="M8.5 1L2 8.5h5.5L5.5 13l7-7.5H7L8.5 1z"/></svg>`;
-    const SVG_PER  = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="5.5" r="2.75" stroke="currentColor" stroke-width="1.3"/><path d="M2.5 14.5c0-3.038 2.462-5.5 5.5-5.5s5.5 2.462 5.5 5.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>`;
-    const SVG_EXP  = `<svg width="13" height="13" viewBox="0 0 15 15" fill="none"><path d="M7.5 1.5v9M4.5 8l3 3 3-3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 12v1a.5.5 0 00.5.5h10a.5.5 0 00.5-.5v-1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>`;
 
-    const div1 = document.createElement('div'); div1.className = 'wa-bar-divider';
-
-    bar.appendChild(mkBtn(MEETING_BTN_ID, SVG_CAL,  'Schedule Meeting', 'wa-icon-btn-primary', openMeetingModal));
-    bar.appendChild(div1);
-    bar.appendChild(mkBtn('wa-qr-btn',     SVG_BOLT, 'Quick Reply Templates', '', toggleQuickReplyStrip));
-    bar.appendChild(mkBtn('wa-card-btn',   SVG_PER,  'Contact Card (CRM)',    '', openCardPanel));
-    bar.appendChild(mkBtn('wa-export-btn', SVG_EXP,  'Export Chat as .txt',   '', exportChat));
+    bar.appendChild(mkBtn('wa-qr-btn',      SVG_BOLT,   'Quick Reply Templates', '', toggleQuickReplyStrip));
+    bar.appendChild(mkBtn('wa-privacy-btn', SVG_EYE_ON, 'Privacy Mode',          '', togglePrivacyMode));
 
     // Append to body first, then positionMeetingBar will move it into the header
     document.body.appendChild(bar);
@@ -2716,7 +2968,9 @@ const _mainPollInterval = setInterval(() => {
   if (!chrome.runtime?.id) { clearInterval(_mainPollInterval); return; }
   try {
     ensureMeetingBar();
+    injectMeetingFAB();
     injectQuickReplyStrip();
+    watchReplyPreview();
     injectTranscribeButtons();
     injectTranslateButtons();
     injectHoverReply();
@@ -3274,38 +3528,52 @@ let hideReplyTimer   = null;
 const SVG_REPLY_ARROW = `<svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M1.5 5.5L4.5 2.5M1.5 5.5L4.5 8.5M1.5 5.5H7.5a4 4 0 014 4V11" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
 // Find the actual bubble element (narrower than the full-width msg container)
+// WA 2025: message containers are full-width (~1000px), actual bubble is a narrow
+// right-aligned child div (e.g. 237px for text, 336px for images).
 function getBubbleEl(msgContainer) {
-  const waSelectors = [
-    '.tail-container',
-    '[class*="tail-container"]',
-    '[class*="message-box"]',
-    '[class*="focusable-list-item"]',
-  ];
-  for (const sel of waSelectors) {
+  const cRect = msgContainer.getBoundingClientRect();
+  const cW = cRect.width;
+  if (!cW) return msgContainer;
+
+  // Strategy 1: known WA legacy selectors
+  const legacySels = ['.tail-container', '[class*="tail-container"]', '[class*="message-box"]'];
+  for (const sel of legacySels) {
     const el = msgContainer.querySelector(sel);
     if (el) {
-      const rect = el.getBoundingClientRect();
-      if (rect.width > 40) return el;
+      const r = el.getBoundingClientRect();
+      if (r.width > 40 && r.width < cW * 0.95) return el;
     }
   }
+
+  // Strategy 2: walk up from copyable/selectable text (rich text messages)
   const text = msgContainer.querySelector('.selectable-text, .copyable-text');
   if (text) {
-    const cW = msgContainer.getBoundingClientRect().width;
-    if (cW) {
-      let node = text.parentElement;
-      while (node && node !== msgContainer) {
-        const w = node.getBoundingClientRect().width;
-        if (w > 60 && w < cW * 0.85) return node;
-        node = node.parentElement;
-      }
+    let node = text.parentElement;
+    while (node && node !== msgContainer) {
+      const w = node.getBoundingClientRect().width;
+      if (w > 60 && w < cW * 0.85) return node;
+      node = node.parentElement;
     }
   }
-  // Messages with only link preview / quoted preview: use preview block or container
-  const preview = msgContainer.querySelector('[data-testid="link-preview"],[data-testid="quoted-msg"],[data-testid="quoted-message"],[class*="link-preview"],[class*="quoted"]');
-  if (preview) {
-    const rect = preview.getBoundingClientRect();
-    if (rect.width > 40) return preview;
+
+  // Strategy 3: WA 2025 — scan ALL descendant divs for the outermost one that
+  // is narrower than the container (the actual bubble wrapper, any class name).
+  // Sort by DOM order so we get the outermost match first.
+  const allDivs = Array.from(msgContainer.querySelectorAll('div'));
+  for (const el of allDivs) {
+    const r = el.getBoundingClientRect();
+    if (r.width > 40 && r.width < cW * 0.85 && r.height > 8) return el;
   }
+
+  // Strategy 4: link/quoted preview blocks
+  const preview = msgContainer.querySelector(
+    '[data-testid="link-preview"],[data-testid="quoted-msg"],[data-testid="quoted-message"],[class*="link-preview"],[class*="quoted"]'
+  );
+  if (preview) {
+    const r = preview.getBoundingClientRect();
+    if (r.width > 40) return preview;
+  }
+
   return msgContainer;
 }
 
@@ -3352,15 +3620,45 @@ function showReplyBtnFor(msgContainer) {
                   '[data-testid="msg-dblcheck"],[data-testid="msg-check"]'
                 );
 
-  // Position vertically centered on top edge of bubble
-  const TOP = r.top + Math.min(r.height / 2 - 13, 6);
-  if (isOut) {
-    btn.style.top  = TOP + 'px';
-    btn.style.left = (r.left - 36) + 'px';   // left of outgoing bubble
-  } else {
-    btn.style.top  = TOP + 'px';
-    btn.style.left = (r.right + 10) + 'px';  // right of incoming bubble
+  // Helper: find WA's native action bar rect (emoji react + context menu).
+  // WA adds these AFTER our mouseover fires (React synthetic events fire at root, later).
+  // Threshold > 60 skips narrow wrapper divs and lands on the real bar container (~109px wide).
+  function _getWABarRect() {
+    // Only one message ever shows the React button at a time, so search #main globally.
+    // Do NOT scope to msgContainer — it may be a child div that doesn't contain the React
+    // button even though the button belongs to the same hovered message.
+    const waEl = document.querySelector('#main [aria-label="React"],[aria-label="React to this message"]');
+    if (!waEl) return null;
+    let bar = waEl.parentElement;
+    for (let i = 0; i < 8 && bar; i++) {
+      const br = bar.getBoundingClientRect();
+      // The real action-bar container is ~109px wide; skip narrow wrapper divs (≤60px)
+      if (br.width > 60) return br;
+      bar = bar.parentElement;
+    }
+    return waEl.getBoundingClientRect();
   }
+
+  function _applyPosition(waBarRect) {
+    const TOP = r.top + Math.min(r.height / 2 - 13, 6);
+    if (waBarRect) {
+      // WA action bar is visible — place our button just BELOW it, right-aligned, to avoid overlap
+      btn.style.top  = (waBarRect.bottom + 4) + 'px';
+      btn.style.left = (waBarRect.right - 28) + 'px';
+    } else if (isOut) {
+      btn.style.top  = TOP + 'px';
+      btn.style.left = (r.left - 36) + 'px';
+    } else {
+      btn.style.top  = TOP + 'px';
+      btn.style.left = (r.right + 10) + 'px';
+    }
+  }
+
+  // Position immediately (WA bar not yet rendered), then refine once WA renders its bar
+  _applyPosition(_getWABarRect());
+  setTimeout(() => {
+    if (btn.classList.contains('whr-visible')) _applyPosition(_getWABarRect());
+  }, 120);
 
   // Update tooltip: "Go to original" if message is a reply, else "Reply"
   // Walk up to outermost msg-container to check for quoted preview
@@ -3772,13 +4070,14 @@ async function triggerNativeReply(msgContainer) {
 }
 
 // ─── Bulk Message Send (reliable Lexical editor input) ────────────────────────
-async function sendBulkMessage(text) {
+async function sendBulkMessage(text, reqId) {
+  if (_alreadySentReq(reqId)) return { success: true, dedup: true };
   if (findEl(SEL.qrCode)) return { success: false, error: 'Not logged in — scan QR first' };
 
-  // 1. Wait for the chat header — confirms the chat is fully open
-  const header = await waitForEl(['#main header', '#main [data-testid="conversation-header"]'], 12000);
+  // 1. openChatByPhone already confirmed the header — just check it's still there
+  const header = await waitForEl(['#main header', '#main [data-testid="conversation-header"]'], 5000);
   if (!header) return { success: false, error: 'Chat did not open' };
-  await sleep(600);
+  await sleep(250);
 
   // 2. Find compose box
   const input =
@@ -3790,90 +4089,124 @@ async function sendBulkMessage(text) {
   // 3. Click + focus to activate
   input.click();
   input.focus();
-  await sleep(400);
+  await sleep(200);
 
-  // 4. Insert text with proper newline handling (Shift+Enter for line breaks)
+  try {
+    document.execCommand('selectAll', false, null);
+    document.execCommand('delete', false, null);
+  } catch (_) {}
+  await sleep(80);
+
   await insertMessageText(input, text);
-  await sleep(400);
+  await sleep(200);
 
-  // 5. If nothing was inserted, fall back to paste event
-  if (!input.textContent?.trim()) {
-    try {
-      const dt = new DataTransfer();
-      dt.setData('text/plain', text);
-      input.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
-      await sleep(400);
-    } catch (_) {}
-  }
-
-  // 6. Wait for the send button — it only appears when WA sees text in the box
+  // 6. Wait for the send button — appears only when WA sees text in the box
   const sendBtn = await waitForEl([
     'button[data-testid="compose-btn-send"]',
     '[data-testid="compose-btn-send"]',
     '#main footer button[aria-label="Send"]',
     '#main footer span[data-icon="send"]'
-  ], 6000);
+  ], 5000);
 
   if (!sendBtn) return { success: false, error: 'Send button not found — text was not accepted' };
 
-  await sleep(200);
+  await sleep(150);
   sendBtn.click();
-  await sleep(800);
+  await sleep(500);
+  _markSentReq(reqId);
   return { success: true };
 }
 
 // ─── Message Listener ─────────────────────────────────────────────────────────
+async function _getWaImagePayloadByKey(key) {
+  if (!key) return null;
+  try {
+    const s = await chrome.storage.session.get(key);
+    const p = s?.[key];
+    if (p?.imageData) return p;
+  } catch (_) {}
+  try {
+    const l = await chrome.storage.local.get(key);
+    const p = l?.[key];
+    if (p?.imageData) return p;
+  } catch (_) {}
+  return null;
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'CLICK_SEND') {
     clickSend().then(sendResponse).catch(e => sendResponse({ success: false, error: e.message }));
     return true;
   }
 
+  // Lightweight liveness check — background polls this after a hard-nav reload
+  // to know when WA has fully booted (instead of a fixed 8-9 s sleep).
+  if (msg.type === 'PING') {
+    const loggedIn = !findEl(SEL.qrCode);
+    const ready    = loggedIn && !!(
+      document.querySelector('#main, [data-testid="intro-md-beta-logo-dark"], [data-testid="default-user"]') ||
+      document.querySelector('[data-testid="search-input"]') ||
+      document.querySelector('[aria-label="New chat"]')
+    );
+    sendResponse({ pong: true, ready, loggedIn });
+    return false;
+  }
+
   if (msg.type === 'TYPE_AND_SEND') {
-    sendBulkMessage(msg.message).then(sendResponse).catch(e => sendResponse({ success: false, error: e.message }));
+    if (!_beginReq(msg.requestId)) { sendResponse({ success: true, dedup: true }); return false; }
+    sendBulkMessage(msg.message, msg.requestId)
+      .then(sendResponse)
+      .catch(e => sendResponse({ success: false, error: e.message }))
+      .finally(() => _endReq(msg.requestId));
     return true;
   }
 
   if (msg.type === 'SEND_WITH_IMAGE') {
+    if (!_beginReq(msg.requestId)) { sendResponse({ success: true, dedup: true }); return false; }
     (async () => {
       let imageData = msg.imageData, imageMime = msg.imageMime, imageName = msg.imageName, caption = msg.caption;
       if (msg.imageKey) {
-        try {
-          const stored = await chrome.storage.session.get(msg.imageKey);
-          const p = stored?.[msg.imageKey];
-          if (p?.imageData) {
-            imageData = p.imageData;
-            imageMime = p.imageMime || imageMime;
-            imageName = p.imageName || imageName;
-            caption = p.caption != null ? p.caption : caption;
-          }
-        } catch (_) { /* use inline msg.imageData if present */ }
+        const p = await _getWaImagePayloadByKey(msg.imageKey);
+        if (p?.imageData) {
+          imageData = p.imageData;
+          imageMime = p.imageMime || imageMime;
+          imageName = p.imageName || imageName;
+          caption = p.caption != null ? p.caption : caption;
+        }
       }
       if (!imageData) return sendResponse({ success: false, error: 'No image data — session empty; reload extension and retry' });
-      sendResponse(await sendImageWithCaption(imageData, imageMime, imageName, caption || ''));
-    })().catch(e => sendResponse({ success: false, error: e.message }));
+      const r = await sendImageWithCaption(imageData, imageMime, imageName, caption || '');
+      if (r?.success) _markSentReq(msg.requestId);
+      sendResponse(r);
+    })().catch(e => sendResponse({ success: false, error: e.message })).finally(() => _endReq(msg.requestId));
     return true;
   }
 
   if (msg.type === 'OPEN_AND_SEND') {
+    if (!_beginReq(msg.requestId)) { sendResponse({ success: true, dedup: true }); return false; }
     (async () => {
       const nav = await openChatByPhone(msg.phone);
       if (!nav.success) return sendResponse(nav);
       let imageData = msg.imageData, imageMime = msg.imageMime, imageName = msg.imageName, caption = msg.caption;
       if (msg.imageKey) {
-        try {
-          const stored = await chrome.storage.session.get(msg.imageKey);
-          const p = stored?.[msg.imageKey];
-          if (p) { imageData = p.imageData; imageMime = p.imageMime; imageName = p.imageName; caption = p.caption ?? msg.message ?? caption; }
-        } catch (_) { /* session storage unavailable in this context — use inline imageData from message */ }
+        const p = await _getWaImagePayloadByKey(msg.imageKey);
+        if (p?.imageData) {
+          imageData = p.imageData;
+          imageMime = p.imageMime;
+          imageName = p.imageName;
+          caption = p.caption ?? msg.message ?? caption;
+        }
       }
+      if (_alreadySentReq(msg.requestId)) return sendResponse({ success: true, dedup: true });
       if (imageData) {
-        sendResponse(await sendImageWithCaption(imageData, imageMime, imageName, caption || msg.message || ''));
+        const r = await sendImageWithCaption(imageData, imageMime, imageName, caption || msg.message || '');
+        if (r?.success) _markSentReq(msg.requestId);
+        sendResponse(r);
       } else {
-        const ok = await typeAndSend(msg.message || '');
+        const ok = await typeAndSend(msg.message || '', msg.requestId);
         sendResponse({ success: !!ok });
       }
-    })().catch(e => sendResponse({ success: false, error: e.message }));
+    })().catch(e => sendResponse({ success: false, error: e.message })).finally(() => _endReq(msg.requestId));
     return true;
   }
 

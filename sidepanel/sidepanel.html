@@ -304,7 +304,7 @@
 
       <div class="form-group">
         <label class="label">Message</label>
-        <textarea id="qs-message" class="textarea" rows="6" placeholder="Type your message here..."></textarea>
+        <textarea id="qs-message" class="textarea" rows="6" placeholder="Message (optional if Compose template is filled — template is used as caption for media)"></textarea>
         <div class="row justify-between mt-4">
           <span class="muted-text" id="qs-charcount">0 chars</span>
         </div>
@@ -709,11 +709,64 @@
     <div class="panel" id="panel-tasks">
       <div class="section-badge mb-6">✅ Task Manager</div>
       <p class="hint mb-8">Tasks sync with WhatsApp Web. You’ll get a <strong>browser notification</strong> at the reminder time.</p>
-      <div class="task-sp-tabs row gap-6 mb-8">
+      <div class="task-sp-tabs row gap-6 mb-8" style="align-items:center">
+        <button type="button" class="btn-mtg-icon" id="mtg-toggleBtn" title="Schedule Meeting">📅</button>
         <button type="button" class="btn btn-outline btn-sm task-sp-nav active" data-task-filter="today">Today</button>
         <button type="button" class="btn btn-outline btn-sm task-sp-nav" data-task-filter="tomorrow">Tomorrow</button>
         <button type="button" class="btn btn-outline btn-sm task-sp-nav" data-task-filter="later">Later</button>
         <button type="button" class="btn btn-outline btn-sm task-sp-nav" data-task-filter="done">Done</button>
+      </div>
+
+      <!-- ── Schedule Meeting (collapsed by default) ─────────────── -->
+      <div id="mtg-panel" style="display:none" class="mb-10">
+        <div class="card">
+          <div class="form-group">
+            <label class="label">Contact Name</label>
+            <input type="text" id="mtg-contact" class="input" placeholder="e.g. Raj Kumar">
+          </div>
+          <div class="form-group">
+            <label class="label">Meeting Title</label>
+            <input type="text" id="mtg-title" class="input" placeholder="e.g. Product Demo, Follow-up Call">
+          </div>
+          <div class="form-group">
+            <label class="label">Date &amp; Time</label>
+            <input type="datetime-local" id="mtg-datetime" class="input">
+          </div>
+          <div class="form-group">
+            <label class="label">Platform</label>
+            <select id="mtg-platform" class="input">
+              <option value="Google Meet">Google Meet</option>
+              <option value="Zoom">Zoom</option>
+              <option value="Microsoft Teams">Microsoft Teams</option>
+              <option value="WhatsApp Call">WhatsApp Call</option>
+              <option value="Phone Call">Phone Call</option>
+              <option value="In Person">In Person</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <div class="row gap-6 align-center mb-4">
+              <label class="label" style="margin:0;flex:1">Meeting Link</label>
+              <button class="btn btn-outline btn-xs" id="mtg-getMeetBtn" type="button">🎥 Auto Google Meet</button>
+            </div>
+            <input type="text" id="mtg-link" class="input" placeholder="https://meet.google.com/...">
+          </div>
+          <div class="form-group">
+            <label class="label">Alert Before Meeting</label>
+            <select id="mtg-alert" class="input">
+              <option value="0">No alert</option>
+              <option value="5">5 minutes</option>
+              <option value="10" selected>10 minutes</option>
+              <option value="15">15 minutes</option>
+              <option value="30">30 minutes</option>
+              <option value="60">1 hour</option>
+            </select>
+          </div>
+          <button class="btn btn-green" style="width:100%" id="mtg-saveBtn" type="button">📅 Schedule Meeting</button>
+          <div id="mtg-result" class="result-msg mt-6" style="display:none"></div>
+        </div>
+        <div id="mtg-list" class="mt-8">
+          <div class="empty-state" style="border:1px solid #21262d;border-radius:8px">No meetings scheduled.</div>
+        </div>
       </div>
       <div id="task-sp-list" class="card-list task-sp-list">
         <div class="empty-state">No tasks. Add one below.</div>
@@ -972,10 +1025,55 @@
         <span class="progress-nums" id="progressNums">0 / 0</span>
         <span class="variant-badge" id="variantBadge" style="display:none"></span>
       </div>
+      <div class="progress-time-row row justify-between mt-5">
+        <span class="progress-timer">⏱ <span id="campaignElapsed">0:00</span></span>
+        <span class="progress-eta" id="campaignETA"></span>
+      </div>
+      <div class="progress-mini-stats mt-6">
+        <div class="pms-box pms-sent"><span id="pms-sent">0</span><span class="pms-lbl">Sent</span></div>
+        <div class="pms-box pms-invalid"><span id="pms-invalid">0</span><span class="pms-lbl">Invalid</span></div>
+        <div class="pms-box pms-failed"><span id="pms-failed">0</span><span class="pms-lbl">Failed</span></div>
+        <div class="pms-box pms-remain"><span id="pms-remain">0</span><span class="pms-lbl">Left</span></div>
+      </div>
+    </div>
+    <div id="campaignEstimate" class="campaign-estimate" style="display:none">
+      <span class="estimate-icon">🕐</span>
+      <span>Est. time: <strong id="estimateText">—</strong></span>
+      <span class="estimate-detail" id="estimateDetail"></span>
     </div>
     <div class="row gap-8 mt-8">
       <button class="btn btn-green btn-lg" id="startBtn">▶ Start Campaign</button>
       <button class="btn btn-danger btn-lg" id="stopBtn" style="display:none">⏹ Stop</button>
+    </div>
+  </div>
+
+  <!-- ── Campaign Report Modal ──────────────────────────────────────────── -->
+  <div id="campaignReport" class="report-overlay" style="display:none">
+    <div class="report-card">
+      <div class="report-checkmark">✓</div>
+      <div class="report-title">Campaign Complete</div>
+      <div class="report-name" id="reportCampaignName"></div>
+      <div class="report-duration">⏱ Duration: <strong id="reportDuration">--</strong></div>
+      <div class="report-stats">
+        <div class="rstat green"><div class="rstat-num" id="rstat-sent">0</div><div class="rstat-lbl">Sent</div></div>
+        <div class="rstat orange"><div class="rstat-num" id="rstat-invalid">0</div><div class="rstat-lbl">Invalid</div></div>
+        <div class="rstat red"><div class="rstat-num" id="rstat-failed">0</div><div class="rstat-lbl">Failed</div></div>
+        <div class="rstat blue"><div class="rstat-num" id="rstat-total">0</div><div class="rstat-lbl">Total</div></div>
+      </div>
+      <div class="report-rate-bar"><div class="rate-bar-fill" id="reportRateFill" style="width:0%"></div></div>
+      <div class="report-rate-label" id="reportRateLabel">0% success rate</div>
+      <div id="reportInvalidList" class="report-issues" style="display:none">
+        <div class="report-issues-title">⚠️ Invalid / Not Found</div>
+        <div id="reportInvalidItems" class="report-issues-list"></div>
+      </div>
+      <div id="reportFailedList" class="report-issues" style="display:none">
+        <div class="report-issues-title">❌ Failed to Send</div>
+        <div id="reportFailedItems" class="report-issues-list"></div>
+      </div>
+      <div class="report-actions">
+        <button class="btn btn-outline btn-sm" id="reportExportBtn">⬇ Export CSV</button>
+        <button class="btn btn-green" id="reportCloseBtn">Close</button>
+      </div>
     </div>
   </div>
 

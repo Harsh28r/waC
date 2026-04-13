@@ -116,8 +116,36 @@
     return input;
   }
 
+  /** Line endings from Windows / iOS / Word — Lexical needs real \\n for paste split. */
+  function waNormalizeLines(t) {
+    return String(t || '')
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n')
+      .replace(/\u2028/g, '\n')
+      .replace(/\u2029/g, '\n');
+  }
+  function waPlainToPasteHtml(norm) {
+    var esc = function (s) {
+      return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    };
+    var lines = norm.split('\n');
+    var body = '';
+    for (var li = 0; li < lines.length; li++) body += '<div>' + esc(lines[li]) + '</div>';
+    return '<meta charset="utf-8">' + body;
+  }
+  /** One paste (plain + div-per-line HTML) — insertLineBreak+insertText glues lines / jitter on WA Lexical. No second path → no duplicated blocks. */
+  function waPasteLexicalPlainHtml(el, plainRaw) {
+    var norm = waNormalizeLines(plainRaw);
+    try {
+      var dt = new DataTransfer();
+      dt.setData('text/plain', norm);
+      dt.setData('text/html', waPlainToPasteHtml(norm));
+      el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    } catch (eP) {}
+  }
+
   window.__waBulkPageMain = {
-    __apiVersion: 6,
+    __apiVersion: 11,
 
     patchFileInputs: function () {
       if (!window.__waInputsPatched) window.__waInputsPatched = [];
@@ -292,13 +320,67 @@
       }
       var el = cap();
       if (!el) return { found: false };
+      var norm = waNormalizeLines(text);
+      // Idempotency: if the element already contains exactly the target text, don't re-insert.
+      // Prevents duplication when the retry loop fires after a Lexical async DOM-update lag.
+      var existing = (el.innerText || el.textContent || '').replace(/\r/g, '').trim();
+      if (existing && existing === norm.trim()) {
+        return { found: true, inserted: existing.slice(0, 80), ok: true };
+      }
       el.focus();
-      var bev = new InputEvent('beforeinput', { inputType: 'insertText', data: text, bubbles: true, cancelable: true });
-      var prevented = !el.dispatchEvent(bev);
-      if (!prevented) document.execCommand('insertText', false, text);
-      el.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: text, bubbles: true }));
-      var inserted = (el.innerText || el.textContent || '').trim();
-      return { found: true, inserted: inserted.slice(0, 80) };
+      try {
+        document.execCommand('selectAll', false, null);
+        document.execCommand('delete', false, null);
+      } catch (e0) {}
+      var cmdOk = false;
+      if (norm.indexOf('\n') < 0) {
+        try {
+          cmdOk = document.execCommand('insertText', false, norm) !== false;
+        } catch (eSingle) {}
+      } else {
+        try { waPasteLexicalPlainHtml(el, norm); cmdOk = true; } catch (eP) {}
+      }
+      // Lexical updates the DOM asynchronously — read immediately as a best-effort check,
+      // but also trust cmdOk so the caller doesn't retry a successful insert.
+      var raw = (el.innerText || el.textContent || '').replace(/\r/g, '');
+      var ok = raw.replace(/\s/g, '').length > 0 || cmdOk;
+      return { found: true, inserted: raw.slice(0, 80), ok: ok };
+    },
+
+    /** Footer compose only — runs in MAIN so execCommand/Lexical see the same document. Never set textContent (breaks Lexical). */
+    insertComposeText: function (text) {
+      var norm = waNormalizeLines(text);
+      function pickCompose() {
+        var a = document.querySelector('#main footer [data-lexical-editor="true"]');
+        if (a) return a;
+        var b = document.querySelector('#main footer div[contenteditable="true"]');
+        if (b) return b;
+        var c = document.querySelector('#main div[contenteditable="true"][data-tab="10"]');
+        if (c && c.closest('#main footer')) return c;
+        var d = document.querySelector('div[contenteditable="true"][data-tab="10"]');
+        if (d && d.closest('#main footer')) return d;
+        return null;
+      }
+      var el = pickCompose();
+      if (!el) return { found: false, ok: false };
+      try {
+        el.click();
+      } catch (ec) {}
+      el.focus();
+      try {
+        document.execCommand('selectAll', false, null);
+        document.execCommand('delete', false, null);
+      } catch (e0) {}
+      if (norm.indexOf('\n') < 0) {
+        try {
+          document.execCommand('insertText', false, norm);
+        } catch (e1) {}
+      } else {
+        waPasteLexicalPlainHtml(el, norm);
+      }
+      var raw = (el.innerText || el.textContent || '').replace(/\r/g, '');
+      var ok = raw.replace(/\s/g, '').length > 0;
+      return { found: true, ok: ok, inserted: raw.slice(0, 80) };
     },
 
     stickerOff: function () {

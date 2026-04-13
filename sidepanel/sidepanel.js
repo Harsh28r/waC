@@ -227,8 +227,8 @@ function renderPlanBadge() {
 }
 
 chrome.storage.local.get(['contacts','settings','results','replies','pinnedChats'], (d) => {
-  if (d.contacts)    { contacts    = d.contacts.map(c => crmDefaults(c)); renderContacts(); }
-  if (d.settings)    { settings    = { ...settings, ...d.settings }; applySettings(); }
+  if (d.contacts)    { contacts    = d.contacts.map(c => crmDefaults(c)); renderContacts(); refreshEstimate(); }
+  if (d.settings)    { settings    = { ...settings, ...d.settings }; applySettings(); refreshEstimate(); }
   if (d.results)     { results     = d.results;  renderLastResults(); }
   if (d.replies)     { replies     = d.replies;  renderReplies(); }
   if (d.pinnedChats) { pinnedChats = d.pinnedChats; renderPinnedChats(); }
@@ -394,7 +394,121 @@ document.getElementById('task-sp-save')?.addEventListener('click', () => {
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes.waTasks) renderTasks();
+  if (area === 'local' && changes.scheduledMeetings) renderMeetings();
 });
+
+// ─── Schedule Meeting ─────────────────────────────────────────────────────────
+const mtgToggleBtn = document.getElementById('mtg-toggleBtn');
+const mtgPanel     = document.getElementById('mtg-panel');
+
+mtgToggleBtn?.addEventListener('click', () => {
+  const open = mtgPanel.style.display === 'none';
+  mtgPanel.style.display = open ? 'block' : 'none';
+  mtgToggleBtn.classList.toggle('active', open);
+  if (open) renderMeetings();
+});
+
+document.getElementById('mtg-getMeetBtn')?.addEventListener('click', async () => {
+  const btn = document.getElementById('mtg-getMeetBtn');
+  btn.textContent = '⏳ Getting link...';
+  btn.disabled = true;
+  try {
+    const res = await chrome.runtime.sendMessage({ type: 'GET_GOOGLE_MEET_LINK' });
+    if (res?.success && res.link) {
+      document.getElementById('mtg-link').value = res.link;
+    } else {
+      alert('Could not get Google Meet link. Make sure a Meet tab is open or allow the extension to create one.');
+    }
+  } catch(e) { alert('Error: ' + e.message); }
+  btn.textContent = '🎥 Auto Google Meet';
+  btn.disabled = false;
+});
+
+document.getElementById('mtg-saveBtn')?.addEventListener('click', async () => {
+  const contact     = document.getElementById('mtg-contact').value.trim();
+  const title       = document.getElementById('mtg-title').value.trim();
+  const datetimeVal = document.getElementById('mtg-datetime').value;
+  const platform    = document.getElementById('mtg-platform').value;
+  const link        = document.getElementById('mtg-link').value.trim();
+  const alertMins   = parseInt(document.getElementById('mtg-alert').value, 10);
+  const resultEl    = document.getElementById('mtg-result');
+
+  if (!contact || !title || !datetimeVal) {
+    resultEl.textContent = '⚠️ Contact name, title, and date/time are required.';
+    resultEl.style.display = 'block';
+    resultEl.style.color = '#f85149';
+    return;
+  }
+  const datetime = new Date(datetimeVal).getTime();
+  if (datetime < Date.now()) {
+    resultEl.textContent = '⚠️ Date/time must be in the future.';
+    resultEl.style.display = 'block';
+    resultEl.style.color = '#f85149';
+    return;
+  }
+
+  const btn = document.getElementById('mtg-saveBtn');
+  btn.disabled = true;
+  btn.textContent = '⏳ Scheduling...';
+  try {
+    const res = await chrome.runtime.sendMessage({ type: 'SAVE_MEETING', data: { contactName: contact, title, datetime, platform, link, alertMinutes: alertMins } });
+    if (res?.success) {
+      resultEl.textContent = '✅ Meeting scheduled!';
+      resultEl.style.color = '#25D366';
+      resultEl.style.display = 'block';
+      document.getElementById('mtg-contact').value = '';
+      document.getElementById('mtg-title').value   = '';
+      document.getElementById('mtg-datetime').value = '';
+      document.getElementById('mtg-link').value    = '';
+      renderMeetings();
+      setTimeout(() => { resultEl.style.display = 'none'; }, 3000);
+    } else {
+      resultEl.textContent = '❌ Failed to schedule.';
+      resultEl.style.color = '#f85149';
+      resultEl.style.display = 'block';
+    }
+  } catch(e) {
+    resultEl.textContent = '❌ Error: ' + e.message;
+    resultEl.style.color = '#f85149';
+    resultEl.style.display = 'block';
+  }
+  btn.disabled = false;
+  btn.textContent = '📅 Schedule Meeting';
+});
+
+async function renderMeetings() {
+  const listEl = document.getElementById('mtg-list');
+  if (!listEl) return;
+  try {
+    const res = await chrome.runtime.sendMessage({ type: 'GET_MEETINGS' });
+    const meetings = (res?.meetings || []).filter(m => m.datetime > Date.now()).sort((a,b) => a.datetime - b.datetime);
+    if (!meetings.length) {
+      listEl.innerHTML = '<div class="empty-state" style="border:1px solid #21262d;border-radius:8px">No upcoming meetings.</div>';
+      return;
+    }
+    listEl.innerHTML = meetings.map(m => {
+      const dt = new Date(m.datetime);
+      const dtStr = dt.toLocaleDateString('en-IN', { weekday:'short', day:'numeric', month:'short' }) + ' ' + dt.toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit' });
+      return `<div class="card mb-6" style="padding:8px 10px">
+        <div class="row justify-between align-center">
+          <div style="flex:1;min-width:0">
+            <div style="font-size:12px;font-weight:600;color:#c9d1d9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(m.title)}</div>
+            <div class="hint mt-2">${esc(m.contactName)} · ${esc(m.platform)} · ${dtStr}</div>
+            ${m.link ? `<div class="hint mt-1" style="font-size:10px;color:#58a6ff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(m.link)}</div>` : ''}
+          </div>
+          <button class="btn btn-outline btn-xs" style="margin-left:6px;flex-shrink:0" onclick="deleteMtg('${m.id}')">🗑</button>
+        </div>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    listEl.innerHTML = '<div class="hint">Error loading meetings.</div>';
+  }
+}
+
+async function deleteMtg(id) {
+  await chrome.runtime.sendMessage({ type: 'DELETE_MEETING', data: { id } });
+  renderMeetings();
+}
 
 // ─── DATA REPORT TAB (Excel/CSV → Power BI–style analysis) ─────────────────────
 function initReportTab() {
@@ -995,14 +1109,14 @@ function attachContactListEvents() {
   });
 }
 
-function saveContacts() { chrome.storage.local.set({ contacts }); }
+function saveContacts() { chrome.storage.local.set({ contacts }); refreshEstimate(); }
 
 // ─── Compose Tab ──────────────────────────────────────────────────────────────
 document.getElementById('msgTemplate').addEventListener('input', () => {
   const len = document.getElementById('msgTemplate').value.length;
   document.getElementById('charCount').textContent = `${len} chars`;
   document.getElementById('waLimit').textContent = len > 1000 ? '⚠️ Long message' : '';
-  updatePreview();
+  void updatePreview();
 });
 
 // Image file picker
@@ -1017,6 +1131,27 @@ function readFileAsDataURL(file) {
     r.onerror = () => reject(new Error('read_failed'));
     r.readAsDataURL(file);
   });
+}
+
+/** Put data: URLs in chrome.storage.local so runtime messages stay small (fixes truncated / empty media on send). Unique key avoids schedule vs live campaign clobbering. */
+async function stageImageForBackgroundMessage(imageUrl, imageMime, imageName) {
+  if (!imageUrl || !String(imageUrl).startsWith('data:')) {
+    return { imageUrl, imageMime, imageName, imageStagingKey: null };
+  }
+  const key = `waBulkStagedMedia_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+  try {
+    await chrome.storage.local.set({
+      [key]: {
+        imageData: imageUrl,
+        imageMime: imageMime || 'image/jpeg',
+        imageName: imageName || 'image.jpg'
+      }
+    });
+    return { imageUrl: null, imageMime, imageName, imageStagingKey: key };
+  } catch (e) {
+    console.warn('[WA] Media staging failed, sending inline:', e);
+    return { imageUrl, imageMime, imageName, imageStagingKey: null };
+  }
 }
 
 async function ensureCampaignMediaData() {
@@ -1149,48 +1284,116 @@ document.getElementById('aiEnabled').addEventListener('change', e => {
 });
 
 // Preview
-document.getElementById('previewPicker').addEventListener('change', updatePreview);
+document.getElementById('previewPicker').addEventListener('change', () => { void updatePreview(); });
 function updatePreviewPicker() {
   const sel = document.getElementById('previewPicker');
   sel.innerHTML = '<option value="">Select contact for preview...</option>';
   contacts.forEach((c, i) => sel.innerHTML += `<option value="${i}">${esc(c.name||c.phone)}</option>`);
 }
-function updatePreview() {
-  const idx = document.getElementById('previewPicker').value;
-  const tpl = document.getElementById('msgTemplate').value;
-  const box = document.getElementById('previewBubble');
-  if (idx === '' || !tpl) { box.textContent = 'Write a template and select a contact to preview.'; return; }
-  const c = contacts[+idx];
+function escapeRegExpPreview(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+function fillPreviewPlaceholders(tpl, contact) {
   let msg = tpl;
-  for (const [k, v] of Object.entries(c)) msg = msg.replace(new RegExp(`\\{${k}\\}`, 'gi'), v || '');
-  box.textContent = msg;
+  for (const [k, v] of Object.entries(contact)) {
+    if (!k || typeof k !== 'string') continue;
+    let repl = '';
+    if (v == null) repl = '';
+    else if (Array.isArray(v)) repl = v.map(x => (x == null ? '' : String(x))).join(', ');
+    else if (typeof v === 'object') repl = '';
+    else repl = String(v);
+    // Function replacer: strings with `$`, `$&`, `$$` must not trigger special replace rules
+    msg = msg.replace(new RegExp(`\\{${escapeRegExpPreview(k)}\\}`, 'gi'), () => repl);
+  }
+  return msg;
+}
+
+const WA_LAST_QUICK_TEMPLATE_KEY = 'lastQuickTemplateMessage';
+
+/** Compose tab textarea, else Template library (last “Use” / newest saved). */
+async function composeTemplateOrSavedRaw() {
+  const compose = (document.getElementById('msgTemplate')?.value || '').trim();
+  if (compose) return compose;
+  try {
+    const st = await chrome.storage.local.get(['templates', WA_LAST_QUICK_TEMPLATE_KEY]);
+    const last = String(st[WA_LAST_QUICK_TEMPLATE_KEY] || '').trim();
+    if (last) return last;
+    const list = st.templates || templates || [];
+    if (!list.length) return '';
+    const newest = [...list].sort((a, b) => (b.id || 0) - (a.id || 0))[0];
+    return String(newest?.message || '').trim();
+  } catch (_) {
+    return '';
+  }
+}
+
+async function resolveQuickSendCaption(qsMessageTrimmed, destinationPhone) {
+  if (qsMessageTrimmed) return qsMessageTrimmed;
+  const raw = await composeTemplateOrSavedRaw();
+  if (!raw) return '';
+  const mini = { name: destinationPhone, phone: destinationPhone };
+  return fillPreviewPlaceholders(raw, mini).trim();
+}
+
+/** Quick blast box wins; else same source as Compose (`composeTemplateOrSavedRaw`). */
+async function resolveBlastTemplateRaw(qsBlastMsgTrimmed) {
+  if (qsBlastMsgTrimmed) return qsBlastMsgTrimmed;
+  return composeTemplateOrSavedRaw();
+}
+
+async function updatePreview() {
+  const idx = document.getElementById('previewPicker').value;
+  let tpl = document.getElementById('msgTemplate').value;
+  const box = document.getElementById('previewBubble');
+  if (idx === '') {
+    box.textContent = 'Write a template and select a contact to preview.';
+    return;
+  }
+  if (!tpl.trim()) tpl = await composeTemplateOrSavedRaw();
+  if (!String(tpl || '').trim()) {
+    box.textContent = 'Fill Compose, save a library template, or pick “Use” on one — then select a contact.';
+    return;
+  }
+  const c = contacts[+idx];
+  box.textContent = fillPreviewPlaceholders(tpl, c);
 }
 
 // Schedule button
-document.getElementById('scheduleBtn').addEventListener('click', () => {
+document.getElementById('scheduleBtn').addEventListener('click', async () => {
   const timeVal = document.getElementById('scheduleTime').value;
   if (!timeVal) return showResult('scheduleResult', '⛔ Pick a date/time first', 'err');
   const ts = new Date(timeVal).getTime();
   if (ts <= Date.now()) return showResult('scheduleResult', '⛔ Time must be in the future', 'err');
 
-  const template  = document.getElementById('msgTemplate').value.trim();
+  await ensureCampaignMediaData();
+  let template = document.getElementById('msgTemplate').value.trim();
+  if (!template) template = await composeTemplateOrSavedRaw();
   const templateB = document.getElementById('msgTemplateB').value.trim();
   const abEnabled = document.getElementById('abEnabled').checked;
+  const scheduleHasMedia = !!(campaignImageData && String(campaignImageData).startsWith('data:'));
   if (!contacts.length) return showResult('scheduleResult', '⛔ Add contacts first', 'err');
-  if (!template)        return showResult('scheduleResult', '⛔ Write a message template first', 'err');
+  if (!template && !scheduleHasMedia) {
+    return showResult('scheduleResult', '⛔ Add Compose text, a saved library template, or attach media', 'err');
+  }
 
   const delaySec = parseInt(document.getElementById('minDelay')?.value) || 15;
 
   const scheduleCampaignName = document.getElementById('campaignName')?.value?.trim() || '';
+  const schedStaged = await stageImageForBackgroundMessage(
+    campaignImageData || null,
+    campaignImageMime || 'image/jpeg',
+    campaignImageName || 'image.jpg'
+  );
   chrome.runtime.sendMessage({
     type: 'SCHEDULE_CAMPAIGN',
     data: {
       timestamp: ts,
       campaignData: {
         contacts, template, templateB, abEnabled,
-        imageUrl: campaignImageData || null,
-        imageMime: campaignImageMime || 'image/jpeg',
-        imageName: campaignImageName || 'image.jpg',
+        imageUrl: schedStaged.imageUrl,
+        imageStagingKey: schedStaged.imageStagingKey,
+        imageMime: schedStaged.imageMime,
+        imageName: schedStaged.imageName,
         settings: { ...settings, minDelay: delaySec, maxDelay: delaySec, campaignName: scheduleCampaignName }
       }
     }
@@ -1234,35 +1437,53 @@ document.getElementById('qs-sendBtn').addEventListener('click', async () => {
   const cc      = (document.getElementById('qs-country')?.value || '91').replace(/\D/g, '');
   const number  = document.getElementById('qs-phone').value.trim().replace(/\D/g, '');
   const phone   = getFullPhoneFromCountryAndNumber(cc, number);
-  const message = document.getElementById('qs-message').value.trim();
+  const qsInput = document.getElementById('qs-message').value.trim();
   const v = validatePhone(phone);
   if (!v.valid) return showResult('qs-result', '⛔ ' + v.error, 'err');
-  // Allow image-only (caption from Compose) or text-only
   await ensureCampaignMediaData();
   let imageUrl = campaignImageData || document.getElementById('imagePreviewImg')?.src;
   if (imageUrl && !imageUrl.startsWith('data:')) imageUrl = null;
   if (!imageUrl && campaignImageName) return showResult('qs-result', '⛔ Media selected earlier but not available now. Re-attach file.', 'err');
-  if (!message && !imageUrl) return showResult('qs-result', '⛔ Enter a message or attach image in Compose tab', 'err');
+  const resolvedText = await resolveQuickSendCaption(qsInput, phone);
+  if (!resolvedText && !imageUrl) {
+    return showResult('qs-result', '⛔ Type a message in Quick Sender, or write the Compose template, or attach media.', 'err');
+  }
 
   const btn = document.getElementById('qs-sendBtn');
   btn.disabled = true; btn.textContent = '⏳ Sending...';
   showResult('qs-result', '📤 Opening WhatsApp Web...', 'info');
 
-  let finalMsg = message;
+  let finalMsg = resolvedText;
   const aiOn = document.getElementById('qs-aiEnabled').checked;
   const qsAiKey = (settings.aiProvider === 'gemini' ? settings.geminiApiKey : settings.apiKey) || '';
-  if (aiOn && qsAiKey && message) {
+  if (aiOn && qsAiKey && finalMsg) {
     showResult('qs-result', '🤖 AI rewriting message...', 'info');
-    const r = await new Promise(res => chrome.runtime.sendMessage({ type: 'GENERATE_AI_REPLY', data: { replyText: message, contactName: phone, apiKey: qsAiKey, provider: settings.aiProvider || 'gemini' } }, res));
+    const r = await new Promise(res => chrome.runtime.sendMessage({ type: 'GENERATE_AI_REPLY', data: { replyText: finalMsg, contactName: phone, apiKey: qsAiKey, provider: settings.aiProvider || 'gemini' } }, res));
     if (r) finalMsg = r;
   }
 
-  chrome.runtime.sendMessage({ type: 'QUICK_SEND', data: { phone, message: finalMsg || '', imageUrl: imageUrl || null, imageMime: campaignImageMime || 'image/jpeg', imageName: campaignImageName || 'image.jpg', stealthMode: settings.stealthMode } }, resp => {
+  const qsStaged = await stageImageForBackgroundMessage(
+    imageUrl || null,
+    campaignImageMime || 'image/jpeg',
+    campaignImageName || 'image.jpg'
+  );
+  chrome.runtime.sendMessage({
+    type: 'QUICK_SEND',
+    data: {
+      phone,
+      message: finalMsg || '',
+      imageUrl: qsStaged.imageUrl,
+      imageStagingKey: qsStaged.imageStagingKey,
+      imageMime: qsStaged.imageMime,
+      imageName: qsStaged.imageName,
+      stealthMode: settings.stealthMode
+    }
+  }, resp => {
     btn.disabled = false; btn.textContent = '⚡ Send Now';
     if (resp?.success) {
       showResult('qs-result', '✓ Message sent!', 'ok');
       document.getElementById('qs-phone').value = document.getElementById('qs-message').value = '';
-      if (imageUrl) { campaignImageData = campaignImageName = campaignImageMime = null; document.getElementById('qs-imageFileName').textContent = 'No file'; document.getElementById('qs-imageClearBtn').style.display = 'none'; document.getElementById('qs-imageFile').value = ''; }
+      if (imageUrl || qsStaged.imageStagingKey) { campaignImageData = campaignImageName = campaignImageMime = null; document.getElementById('qs-imageFileName').textContent = 'No file'; document.getElementById('qs-imageClearBtn').style.display = 'none'; document.getElementById('qs-imageFile').value = ''; }
     } else {
       showResult('qs-result', '⛔ ' + (resp?.error || 'Send failed'), 'err');
     }
@@ -1284,15 +1505,20 @@ function parsePhonesForBlast(raw, defaultCountry = '91') {
 
 // Blast to CSV contacts — single handler: upload CSV → Quick Blast → send to all
 document.getElementById('qs-blastFromCsvBtn')?.addEventListener('click', async () => {
-  const msg = document.getElementById('qs-blast-msg').value.trim();
+  const msg = await resolveBlastTemplateRaw(document.getElementById('qs-blast-msg').value.trim());
   await ensureCampaignMediaData();
   if (!contacts.length) return showResult('qs-blast-result', '⛔ Upload a CSV in Contacts tab first', 'err');
   if (!campaignImageData && campaignImageName) return showResult('qs-blast-result', '⛔ Media selected earlier but not available now. Re-attach file.', 'err');
-  if (!msg && !campaignImageData) return showResult('qs-blast-result', '⛔ Enter a message or attach image above', 'err');
+  if (!msg && !campaignImageData) return showResult('qs-blast-result', '⛔ Enter Quick blast text, or write Compose template, or attach image', 'err');
   const blastContacts = contacts.filter(c => (c.phone || '').replace(/\D/g, '').length >= 10).map(c => ({ ...crmDefaults(c), status: 'pending' }));
   if (!blastContacts.length) return showResult('qs-blast-result', '⛔ No valid phone numbers in imported contacts', 'err');
   const delaySec = parseInt(document.getElementById('qs-blast-delay')?.value) || 20;
   const d = Math.max(5, Math.min(300, delaySec));
+  const csvStaged = await stageImageForBackgroundMessage(
+    campaignImageData || null,
+    campaignImageMime || 'image/jpeg',
+    campaignImageName || 'image.jpg'
+  );
   showResult('qs-blast-result', `🚀 Blasting to ${blastContacts.length} CSV contacts (${d}s between each)...`, 'info');
   chrome.runtime.sendMessage({
     type: 'START_CAMPAIGN',
@@ -1300,9 +1526,10 @@ document.getElementById('qs-blastFromCsvBtn')?.addEventListener('click', async (
       contacts: blastContacts,
       template: msg || '',
       abEnabled: false,
-      imageUrl: campaignImageData || null,
-      imageMime: campaignImageMime || 'image/jpeg',
-      imageName: campaignImageName || 'image.jpg',
+      imageUrl: csvStaged.imageUrl,
+      imageStagingKey: csvStaged.imageStagingKey,
+      imageMime: csvStaged.imageMime,
+      imageName: csvStaged.imageName,
       settings: { ...settings, minDelay: d, maxDelay: d }
     }
   }, resp => {
@@ -1318,10 +1545,10 @@ document.getElementById('qs-blastFromCsvBtn')?.addEventListener('click', async (
 // Multi-number blast (paste numbers)
 document.getElementById('qs-blastBtn').addEventListener('click', async () => {
   const phonesRaw = document.getElementById('qs-phones').value.trim();
-  const msg       = document.getElementById('qs-blast-msg').value.trim();
+  const msg       = await resolveBlastTemplateRaw(document.getElementById('qs-blast-msg').value.trim());
   await ensureCampaignMediaData();
   if (!phonesRaw) return showResult('qs-blast-result', '⛔ Enter phone numbers', 'err');
-  if (!msg && !campaignImageData) return showResult('qs-blast-result', '⛔ Enter a message or attach image/video', 'err');
+  if (!msg && !campaignImageData) return showResult('qs-blast-result', '⛔ Enter Quick blast text, or Compose template, or attach image/video', 'err');
   if (!campaignImageData && campaignImageName) return showResult('qs-blast-result', '⛔ Media selected earlier but not available now. Re-attach file.', 'err');
 
   const defaultCc = (document.getElementById('qs-blast-country')?.value || '91').replace(/\D/g, '');
@@ -1335,6 +1562,12 @@ document.getElementById('qs-blastBtn').addEventListener('click', async () => {
   const delaySec = parseInt(document.getElementById('qs-blast-delay')?.value) || 20;
   const d = Math.max(5, Math.min(300, delaySec));
 
+  const multiStaged = await stageImageForBackgroundMessage(
+    campaignImageData || null,
+    campaignImageMime || 'image/jpeg',
+    campaignImageName || 'image.jpg'
+  );
+
   showResult('qs-blast-result', `🚀 Starting blast to ${phones.length} numbers (${d}s between each)...`, 'info');
 
   chrome.runtime.sendMessage({
@@ -1343,9 +1576,10 @@ document.getElementById('qs-blastBtn').addEventListener('click', async () => {
       contacts: blastContacts,
       template: msg,
       abEnabled: false,
-      imageUrl: campaignImageData || null,
-      imageMime: campaignImageMime || 'image/jpeg',
-      imageName: campaignImageName || 'image.jpg',
+      imageUrl: multiStaged.imageUrl,
+      imageStagingKey: multiStaged.imageStagingKey,
+      imageMime: multiStaged.imageMime,
+      imageName: multiStaged.imageName,
       settings: { ...settings, minDelay: d, maxDelay: d }
     }
   }, resp => {
@@ -1640,9 +1874,25 @@ document.getElementById('exportBtn').addEventListener('click', () => {
   a.click();
 });
 
+// ─── Estimate refresh on delay change ────────────────────────────────────────
+document.getElementById('minDelay')?.addEventListener('input', refreshEstimate);
+document.getElementById('minDelay')?.addEventListener('change', refreshEstimate);
+
 // ─── Campaign Controls ────────────────────────────────────────────────────────
 document.getElementById('startBtn').addEventListener('click', startCampaign);
 document.getElementById('stopBtn').addEventListener('click', stopCampaign);
+document.getElementById('reportCloseBtn').addEventListener('click', () => {
+  document.getElementById('campaignReport').style.display = 'none';
+});
+document.getElementById('reportExportBtn').addEventListener('click', () => {
+  if (!results.length) return;
+  const rows = [['Contact','Phone','Status','Error','Message']];
+  results.forEach(r => rows.push([r.contact||'', r.phone||'', r.status||'', r.error||'', (r.message||'').replace(/\n/g,' ')]));
+  const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = `campaign-report-${new Date().toISOString().slice(0,10)}.csv`; a.click();
+});
 
 function showError(msg) {
   document.getElementById('progressArea').style.display = 'block';
@@ -1654,7 +1904,8 @@ function showError(msg) {
 }
 
 async function startCampaign() {
-  const template  = document.getElementById('msgTemplate').value.trim();
+  let template = document.getElementById('msgTemplate').value.trim();
+  if (!template) template = await composeTemplateOrSavedRaw();
   const templateB = document.getElementById('msgTemplateB').value.trim();
   const abEnabled = document.getElementById('abEnabled').checked;
   await ensureCampaignMediaData();
@@ -1691,10 +1942,11 @@ async function startCampaign() {
   }
   const imageMime = campaignImageMime || 'image/jpeg';
   const imageName = campaignImageName || 'image.jpg';
+  const hadMedia = !!imageUrl;
   if (!imageUrl && campaignImageName) return showError('Media selected earlier but data is missing. Re-attach image/video before starting bulk.');
 
   if (!contacts.length) return showError('Add contacts first (Contacts tab)');
-  if (!template && !imageUrl) return showError('Write a message template (Compose tab) or attach image/video');
+  if (!template && !hadMedia) return showError('Write a message template (Compose tab) or attach image/video');
   if (abEnabled && !templateB) return showError('Write Message B for A/B testing');
   const campaignAiKey = (settings.aiProvider === 'gemini' ? settings.geminiApiKey : settings.apiKey) || '';
   if (settings.aiEnabled && !campaignAiKey) return showError('Add API key in Settings (Gemini free or Claude)');
@@ -1711,11 +1963,23 @@ async function startCampaign() {
   isRunning = true; setRunningUI(true);
   setStatus('Starting', 'running');
   setProgress('🚀 Starting campaign...', 0, 0, contacts.length);
+  startCampaignTimer();
 
   const campaignName = document.getElementById('campaignName')?.value?.trim() || '';
+  const runStaged = await stageImageForBackgroundMessage(imageUrl, imageMime, imageName);
   chrome.runtime.sendMessage({
     type: 'START_CAMPAIGN',
-    data: { contacts, template, templateB, abEnabled, imageUrl, imageMime, imageName, settings: { ...settings, minDelay: delaySec, maxDelay: delaySec, campaignName } }
+    data: {
+      contacts,
+      template,
+      templateB,
+      abEnabled,
+      imageUrl: runStaged.imageUrl,
+      imageStagingKey: runStaged.imageStagingKey,
+      imageMime: runStaged.imageMime,
+      imageName: runStaged.imageName,
+      settings: { ...settings, minDelay: delaySec, maxDelay: delaySec, campaignName }
+    }
   }, resp => {
     if (chrome.runtime.lastError) { showError('Start failed: ' + chrome.runtime.lastError.message); setRunningUI(false); isRunning = false; return; }
     if (resp && resp.success === false) { showError(resp.error || 'Campaign start failed'); setRunningUI(false); isRunning = false; }
@@ -1725,6 +1989,7 @@ async function startCampaign() {
 function stopCampaign() {
   chrome.runtime.sendMessage({ type: 'STOP_CAMPAIGN' });
   isRunning = false; setRunningUI(false); setStatus('Stopped', '');
+  stopCampaignTimer();
 }
 
 // ─── Progress Listener ────────────────────────────────────────────────────────
@@ -1753,15 +2018,108 @@ chrome.storage.onChanged.addListener(changes => {
   }
 });
 
+// ─── Campaign Time Estimate (shown before start) ─────────────────────────────
+function refreshEstimate() {
+  const estEl    = document.getElementById('campaignEstimate');
+  const textEl   = document.getElementById('estimateText');
+  const detailEl = document.getElementById('estimateDetail');
+  if (!estEl || !textEl) return;
+
+  const n       = contacts.length;
+  const delaySec = parseInt(document.getElementById('minDelay')?.value) || 20;
+
+  if (n < 1) { estEl.style.display = 'none'; return; }
+
+  // Total = n contacts × delaySec each (last contact has no delay after it)
+  const totalSec = Math.max(0, (n - 1)) * delaySec + n * 5; // ~5s per send + delay between
+  const h  = Math.floor(totalSec / 3600);
+  const m  = Math.floor((totalSec % 3600) / 60);
+  const s  = totalSec % 60;
+
+  let timeStr = '';
+  if (h > 0 && m > 0)      timeStr = `~${h} hr ${m} min`;
+  else if (h > 0)           timeStr = `~${h} hr`;
+  else if (m > 0 && s > 0) timeStr = `~${m} min ${s} sec`;
+  else if (m > 0)           timeStr = `~${m} min`;
+  else                      timeStr = `~${s} sec`;
+
+  textEl.textContent   = timeStr;
+  detailEl.textContent = `${n} contacts × ${delaySec}s delay`;
+  estEl.style.display  = 'flex';
+}
+
+// ─── Campaign Timer ───────────────────────────────────────────────────────────
+let _timerInterval = null;
+let _campaignStart = null;
+
+function startCampaignTimer() {
+  _campaignStart = Date.now();
+  clearInterval(_timerInterval);
+  document.getElementById('campaignElapsed').textContent = '0:00';
+  document.getElementById('campaignETA').textContent = '';
+  _timerInterval = setInterval(() => {
+    if (!_campaignStart) return;
+    const sec = Math.floor((Date.now() - _campaignStart) / 1000);
+    document.getElementById('campaignElapsed').textContent = formatDuration(sec);
+  }, 1000);
+}
+
+function stopCampaignTimer() {
+  clearInterval(_timerInterval);
+  _timerInterval = null;
+}
+
+function formatDuration(totalSeconds) {
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+  if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  return `${m}:${String(s).padStart(2,'0')}`;
+}
+
+function formatDurationMs(ms) { return formatDuration(Math.round(ms / 1000)); }
+
 function handleProgress(data) {
   if (!data) return;
   const pct = data.total ? Math.round(((data.currentIndex + 1) / data.total) * 100) : 0;
   const varBadge = document.getElementById('variantBadge');
 
+  // Sync start time from background if available
+  if (data.campaignStartTime && !_campaignStart) {
+    _campaignStart = data.campaignStartTime;
+    if (!_timerInterval) startCampaignTimer();
+  }
+
+  // Update live mini-stats if results available
+  if (data.results) updateMiniStats(data.results, data.total);
+
+  // Update ETA based on elapsed + completed contacts
+  if (data.campaignStartTime && data.currentIndex > 0 && data.total) {
+    const elapsed = Date.now() - data.campaignStartTime;
+    const doneCount = data.currentIndex + 1;
+    const msPerContact = elapsed / doneCount;
+    const remaining = data.total - doneCount;
+    const etaSec = Math.round((msPerContact * remaining) / 1000);
+    const etaEl = document.getElementById('campaignETA');
+    if (etaEl && etaSec > 0) {
+      const eh = Math.floor(etaSec / 3600);
+      const em = Math.floor((etaSec % 3600) / 60);
+      const es = etaSec % 60;
+      let etaStr = '';
+      if (eh > 0 && em > 0)      etaStr = `~${eh} hr ${em} min left`;
+      else if (eh > 0)           etaStr = `~${eh} hr left`;
+      else if (em > 0 && es > 0) etaStr = `~${em} min ${es} sec left`;
+      else if (em > 0)           etaStr = `~${em} min left`;
+      else                       etaStr = `~${etaSec} sec left`;
+      etaEl.textContent = etaStr;
+    }
+  }
+
   switch (data.status) {
     case 'starting':
       setStatus('Starting', 'running');
       setProgress('🚀 Opening WhatsApp Web...', 0, 0, data.total);
+      document.getElementById('progressBar').classList.add('running');
       break;
 
     case 'personalizing':
@@ -1779,10 +2137,12 @@ function handleProgress(data) {
 
     case 'sent':
     case 'failed':
+    case 'invalid':
       updateContactStatus(data.phone, data.contact, data.status);
-      if (data.status === 'failed' && data.results?.length) {
+      if ((data.status === 'failed' || data.status === 'invalid') && data.results?.length) {
         const last = data.results[data.results.length - 1];
-        if (last?.error) setProgress(`❌ ${data.contact}: ${last.error}`, pct, data.currentIndex+1, data.total);
+        const icon = data.status === 'invalid' ? '⚠️' : '❌';
+        if (last?.error) setProgress(`${icon} ${data.contact}: ${last.error}`, pct, data.currentIndex+1, data.total);
       }
       if (data.status === 'sent' && data.phone) {
         const ci = contacts.findIndex(c => c.phone === data.phone);
@@ -1804,23 +2164,82 @@ function handleProgress(data) {
 
     case 'error':
       isRunning = false; setRunningUI(false);
+      stopCampaignTimer();
       showError(data.error || 'Unknown error');
       break;
 
     case 'completed':
       isRunning = false; setRunningUI(false);
+      stopCampaignTimer();
       setStatus('Completed', 'completed');
       varBadge.style.display = 'none';
       document.getElementById('progressArea').style.display = 'none';
+      document.getElementById('progressBar').classList.remove('running');
       if (data.results) { results = data.results; renderLastResults(); chrome.storage.local.set({ results }); }
-      // Switch to settings to show results
-      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-      document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-      document.querySelector('[data-tab="settings"]').classList.add('active');
-      document.getElementById('panel-settings').classList.add('active');
+      showCampaignReport(data);
       loadAnalytics();
       break;
   }
+}
+
+function updateMiniStats(resultsList, total) {
+  const sent    = resultsList.filter(r => r.status === 'sent').length;
+  const invalid = resultsList.filter(r => r.status === 'invalid').length;
+  const failed  = resultsList.filter(r => r.status === 'failed').length;
+  const remain  = Math.max(0, (total || 0) - resultsList.length);
+  const s = id => document.getElementById(id);
+  if (s('pms-sent'))    s('pms-sent').textContent    = sent;
+  if (s('pms-invalid')) s('pms-invalid').textContent = invalid;
+  if (s('pms-failed'))  s('pms-failed').textContent  = failed;
+  if (s('pms-remain'))  s('pms-remain').textContent  = remain;
+}
+
+function showCampaignReport(data) {
+  const r = data.results || [];
+  const sent    = r.filter(x => x.status === 'sent').length;
+  const invalid = r.filter(x => x.status === 'invalid').length;
+  const failed  = r.filter(x => x.status === 'failed').length;
+  const total   = r.length;
+  const rate    = total ? Math.round((sent / total) * 100) : 0;
+
+  const durMs   = data.campaignDurationMs || (data.campaignStartTime ? Date.now() - data.campaignStartTime : 0);
+  const durStr  = durMs > 0 ? formatDurationMs(durMs) : '—';
+
+  const campaignName = document.getElementById('campaignName')?.value?.trim() || '';
+
+  // Fill report
+  document.getElementById('reportCampaignName').textContent = campaignName || '';
+  document.getElementById('reportDuration').textContent = durStr;
+  document.getElementById('rstat-sent').textContent    = sent;
+  document.getElementById('rstat-invalid').textContent = invalid;
+  document.getElementById('rstat-failed').textContent  = failed;
+  document.getElementById('rstat-total').textContent   = total;
+  document.getElementById('reportRateFill').style.width = rate + '%';
+  document.getElementById('reportRateLabel').textContent = `${rate}% success rate`;
+
+  // Invalid list
+  const invalidItems = r.filter(x => x.status === 'invalid');
+  const failedItems  = r.filter(x => x.status === 'failed');
+
+  const invList = document.getElementById('reportInvalidList');
+  const invItems = document.getElementById('reportInvalidItems');
+  if (invalidItems.length) {
+    invItems.textContent = invalidItems.map(x => `${x.contact || x.phone} (${x.phone})`).join('\n');
+    invList.style.display = 'block';
+  } else {
+    invList.style.display = 'none';
+  }
+
+  const failList  = document.getElementById('reportFailedList');
+  const failItems = document.getElementById('reportFailedItems');
+  if (failedItems.length) {
+    failItems.textContent = failedItems.map(x => `${x.contact || x.phone}: ${x.error || 'Unknown error'}`).join('\n');
+    failList.style.display = 'block';
+  } else {
+    failList.style.display = 'none';
+  }
+
+  document.getElementById('campaignReport').style.display = 'flex';
 }
 
 function updateContactStatus(phone, name, status) {
@@ -1830,17 +2249,28 @@ function updateContactStatus(phone, name, status) {
 
 function renderLastResults() {
   const sent    = results.filter(r => r.status === 'sent').length;
-  const failed  = results.filter(r => r.status === 'failed').length;
+  const invalid = results.filter(r => r.status === 'invalid').length;
+  const failed  = results.filter(r => r.status === 'failed' || r.status === 'invalid').length;
   const pending = Math.max(0, contacts.length - results.length);
   document.getElementById('statSent').textContent    = sent;
   document.getElementById('statFailed').textContent  = failed;
   document.getElementById('statPending').textContent = pending;
+  updateMiniStats(results, contacts.length);
 }
 
 // ─── UI Helpers ───────────────────────────────────────────────────────────────
 function setRunningUI(running) {
   document.getElementById('startBtn').style.display = running ? 'none' : 'flex';
   document.getElementById('stopBtn').style.display  = running ? 'flex' : 'none';
+  if (running) {
+    // Reset mini-stats on start
+    ['pms-sent','pms-invalid','pms-failed','pms-remain'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.textContent = '0';
+    });
+    document.getElementById('campaignElapsed').textContent = '0:00';
+    document.getElementById('campaignETA').textContent = '';
+    document.getElementById('campaignReport').style.display = 'none';
+  }
   if (!running) document.getElementById('progressArea').style.display = 'none';
 }
 
@@ -1992,6 +2422,7 @@ document.getElementById('tpl-saveBtn').addEventListener('click', () => {
   document.getElementById('tpl-name').value = '';
   document.getElementById('tpl-msg').value  = '';
   renderTemplates();
+  void updatePreview();
   showResult('tpl-saveResult', '✓ Template saved!', 'ok');
 });
 
@@ -2018,7 +2449,11 @@ function renderTemplates() {
       const t = templates[+btn.dataset.tuse];
       document.getElementById('qs-message').value = t.message;
       document.getElementById('qs-charcount').textContent = `${t.message.length} chars`;
+      try {
+        chrome.storage.local.set({ [WA_LAST_QUICK_TEMPLATE_KEY]: t.message });
+      } catch (_) {}
       showToast(`Template "${t.name}" loaded into Quick Sender`);
+      void updatePreview();
     });
   });
 
@@ -2590,10 +3025,16 @@ function renderSegments() {
         <button class="btn btn-green btn-sm" id="seg-blastBtn">🚀 Blast to Segment</button>`;
       document.getElementById('seg-list').after(row);
       document.getElementById('seg-blastBtn').addEventListener('click', async () => {
-        const template = document.getElementById('msgTemplate').value.trim();
+        let template = document.getElementById('msgTemplate').value.trim();
+        if (!template) template = await composeTemplateOrSavedRaw();
         await ensureCampaignMediaData();
-        if (!template && !campaignImageData) { showToast('Write a template or attach image/video in Compose first', 'err'); return; }
+        if (!template && !campaignImageData) { showToast('Compose text, saved library template, or attach media in Compose first', 'err'); return; }
         const delaySec = parseInt(document.getElementById('minDelay')?.value) || 15;
+        const segStaged = await stageImageForBackgroundMessage(
+          campaignImageData || null,
+          campaignImageMime || 'image/jpeg',
+          campaignImageName || 'image.jpg'
+        );
         filtered.forEach(c => c.status = 'pending');
         saveContacts();
         isRunning = true; setRunningUI(true); setStatus('Starting', 'running');
@@ -2603,9 +3044,10 @@ function renderSegments() {
             contacts: filtered,
             template,
             abEnabled: false,
-            imageUrl: campaignImageData || null,
-            imageMime: campaignImageMime || 'image/jpeg',
-            imageName: campaignImageName || 'image.jpg',
+            imageUrl: segStaged.imageUrl,
+            imageStagingKey: segStaged.imageStagingKey,
+            imageMime: segStaged.imageMime,
+            imageName: segStaged.imageName,
             settings: { ...settings, minDelay: delaySec, maxDelay: delaySec }
           }
         }, resp => {

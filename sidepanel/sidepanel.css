@@ -73,6 +73,11 @@ body.phase1-only [data-phase="2"]{display:none !important}
 .tab:hover{color:#c9d1d9}
 .tab.active{color:#25D366;border-bottom-color:#25D366}
 
+/* ── Schedule Meeting Icon Button ─────────────────────────────── */
+.btn-mtg-icon{background:none;border:1px solid #30363d;border-radius:7px;padding:4px 7px;font-size:20px;line-height:1;cursor:pointer;transition:all .2s;flex-shrink:0}
+.btn-mtg-icon:hover{border-color:#25D366;background:rgba(37,211,102,.10);transform:scale(1.08)}
+.btn-mtg-icon.active{border-color:#25D366;background:rgba(37,211,102,.15)}
+
 /* ── Panels ────────────────────────────────────────────────────── */
 .panels{flex:1;overflow:hidden;position:relative}
 .panel{display:none;height:100%;overflow-y:auto;padding:14px}
@@ -117,6 +122,7 @@ select.input{cursor:pointer}
 .btn-danger{background:#da3633;color:#fff}
 .btn-danger:hover:not(:disabled){background:#c72e2c}
 .btn-sm{padding:5px 10px;font-size:12px}
+.btn-xs{padding:3px 7px;font-size:11px}
 .btn-lg{flex:1;padding:11px 14px;font-size:14px}
 
 /* ── Upload Box ────────────────────────────────────────────────── */
@@ -242,10 +248,53 @@ select.input{cursor:pointer}
 /* ── Controls ──────────────────────────────────────────────────── */
 .controls{padding:10px 14px;background:#161b22;border-top:1px solid #21262d;flex-shrink:0}
 .progress-label{font-size:11px;color:#8b949e;margin-bottom:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.progress-track{height:4px;background:#21262d;border-radius:4px;overflow:hidden;margin-bottom:3px}
-.progress-bar{height:100%;background:#25D366;border-radius:4px;transition:width .4s ease}
+.progress-track{height:6px;background:#21262d;border-radius:6px;overflow:hidden;margin-bottom:3px}
+.progress-bar{height:100%;background:linear-gradient(90deg,#25D366,#00c44f);border-radius:6px;transition:width .5s ease}
+.progress-bar.running{animation:bar-shimmer 2s linear infinite}
+@keyframes bar-shimmer{0%{filter:brightness(1)}50%{filter:brightness(1.25)}100%{filter:brightness(1)}}
 .progress-nums{font-size:11px;color:#8b949e}
 .variant-badge{font-size:11px;font-weight:700;color:#bc8cff}
+.progress-time-row{font-size:11px}
+.progress-timer{color:#58a6ff;font-weight:600}
+.progress-eta{color:#d29922}
+.progress-mini-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:5px}
+.pms-box{background:#0d1117;border:1px solid #21262d;border-radius:6px;padding:5px 2px;text-align:center}
+.pms-box span:first-child{display:block;font-size:15px;font-weight:700}
+.pms-lbl{font-size:9px;color:#8b949e;text-transform:uppercase;letter-spacing:.3px;margin-top:1px}
+.pms-sent{border-color:#25D36650;color:#25D366}
+.pms-invalid{border-color:#d2992250;color:#d29922}
+.pms-failed{border-color:#f8514950;color:#f85149}
+.pms-remain{border-color:#58a6ff50;color:#58a6ff}
+
+/* ── Campaign Report Modal ─────────────────────────────────────── */
+.report-overlay{position:fixed;inset:0;background:rgba(13,17,23,.92);display:flex;align-items:center;justify-content:center;z-index:9999;padding:14px;animation:fadeIn .25s ease}
+@keyframes fadeIn{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:scale(1)}}
+.report-card{background:#161b22;border:1px solid #30363d;border-radius:14px;padding:20px 18px;width:100%;max-width:320px;text-align:center;box-shadow:0 24px 64px rgba(0,0,0,.7)}
+.report-checkmark{width:44px;height:44px;background:#1a3a2a;border:2px solid #25D366;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:22px;color:#25D366;margin:0 auto 10px;font-weight:700}
+.report-title{font-size:15px;font-weight:700;color:#c9d1d9;margin-bottom:2px}
+.report-name{font-size:11px;color:#8b949e;margin-bottom:3px;min-height:14px}
+.report-duration{font-size:11px;color:#58a6ff;margin-bottom:14px}
+.report-duration strong{font-weight:700}
+.report-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:5px;margin-bottom:10px}
+.rstat{background:#0d1117;border-radius:8px;padding:8px 2px;border:1px solid #21262d}
+.rstat.green{border-color:#25D36640}.rstat.orange{border-color:#d2992240}.rstat.red{border-color:#f8514940}.rstat.blue{border-color:#58a6ff40}
+.rstat-num{font-size:20px;font-weight:700;color:#c9d1d9}
+.rstat.green .rstat-num{color:#25D366}.rstat.orange .rstat-num{color:#d29922}.rstat.red .rstat-num{color:#f85149}.rstat.blue .rstat-num{color:#58a6ff}
+.rstat-lbl{font-size:9px;color:#8b949e;text-transform:uppercase;letter-spacing:.3px;margin-top:2px}
+.report-rate-bar{height:6px;background:#21262d;border-radius:6px;overflow:hidden;margin-bottom:4px}
+.rate-bar-fill{height:100%;background:linear-gradient(90deg,#25D366,#00c44f);border-radius:6px;transition:width .8s ease}
+.report-rate-label{font-size:11px;color:#8b949e;margin-bottom:10px}
+.report-issues{background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:7px 10px;margin-bottom:7px;text-align:left;max-height:90px;overflow-y:auto}
+.report-issues-title{font-size:10px;font-weight:700;color:#8b949e;text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px}
+.report-issues-list{font-size:11px;line-height:1.7;color:#6e7681}
+.report-actions{display:flex;gap:8px;margin-top:12px}
+.report-actions .btn{flex:1}
+
+/* ── Campaign Estimate Strip ───────────────────────────────────── */
+.campaign-estimate{display:flex;align-items:center;gap:6px;padding:7px 10px;background:#0d1117;border:1px solid #21262d;border-radius:8px;font-size:11px;color:#8b949e;margin-bottom:0;margin-top:6px}
+.campaign-estimate strong{color:#d29922;font-weight:700}
+.estimate-icon{font-size:13px;flex-shrink:0}
+.estimate-detail{margin-left:auto;color:#484f58;font-size:10px}
 
 /* ── Auto Reply Bot ────────────────────────────────────────────── */
 .auto-status-card{background:#161b22;border:1px solid #21262d;border-radius:8px;padding:12px;margin-bottom:10px}
