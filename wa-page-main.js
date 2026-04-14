@@ -145,7 +145,7 @@
   }
 
   window.__waBulkPageMain = {
-    __apiVersion: 11,
+    __apiVersion: 12,
 
     patchFileInputs: function () {
       if (!window.__waInputsPatched) window.__waInputsPatched = [];
@@ -174,7 +174,7 @@
       return { patched: n, totalTracked: window.__waInputsPatched.length };
     },
 
-    galleryInject: function (mime, name, pickIndex) {
+    galleryInject: async function (mime, name, pickIndex) {
       var holder = document.getElementById(WA_B64_HOLDER_ID);
       if (!holder || typeof holder.value !== 'string' || !holder.value.length) return { error: 'no b64 holder' };
       var b64 = holder.value;
@@ -210,15 +210,22 @@
           if (i !== input) restoreClick(i);
         });
       }
-      var bin;
+      // Use fetch for fast native base64 decode (avoids slow JS char loop for large files/videos)
+      var mimeType = mime || 'image/jpeg';
+      var dataUrl = b64.indexOf(',') >= 0 ? b64 : ('data:' + mimeType + ';base64,' + b64);
+      var blob;
       try {
-        bin = atob(b64.replace(/\s/g, ''));
-      } catch (e) {
-        return { error: 'atob: ' + (e && e.message) };
+        var resp = await fetch(dataUrl);
+        blob = await resp.blob();
+      } catch (fetchErr) {
+        // Fallback: manual decode if fetch fails
+        var bin;
+        try { bin = atob(b64.replace(/\s/g, '')); } catch (e) { return { error: 'atob: ' + (e && e.message) }; }
+        var u = new Uint8Array(bin.length);
+        for (var j = 0; j < bin.length; j++) u[j] = bin.charCodeAt(j);
+        blob = new Blob([u], { type: mimeType });
       }
-      var u = new Uint8Array(bin.length);
-      for (var j = 0; j < bin.length; j++) u[j] = bin.charCodeAt(j);
-      var f = new File([new Blob([u], { type: mime || 'image/jpeg' })], name || 'image.jpg', { type: mime || 'image/jpeg' });
+      var f = new File([blob], name || 'image.jpg', { type: mimeType });
       var dt = new DataTransfer();
       dt.items.add(f);
       if (!setInputFilesFromDataTransfer(input, dt.files)) {
@@ -242,15 +249,25 @@
       };
     },
 
-    dragDrop: function (mime, name) {
+    dragDrop: async function (mime, name) {
       var holder = document.getElementById(WA_B64_HOLDER_ID);
       if (!holder || !holder.value) return { error: 'no b64 holder' };
       var b64 = holder.value;
       holder.value = '';
-      var bin = atob(b64.replace(/\s/g, ''));
-      var u = new Uint8Array(bin.length);
-      for (var j = 0; j < bin.length; j++) u[j] = bin.charCodeAt(j);
-      var file = new File([new Blob([u], { type: mime || 'image/jpeg' })], name || 'image.jpg', { type: mime || 'image/jpeg' });
+      // Use fetch for fast native base64 decode (avoids slow JS char loop for large files/videos)
+      var mimeType = mime || 'image/jpeg';
+      var dataUrl = b64.indexOf(',') >= 0 ? b64 : ('data:' + mimeType + ';base64,' + b64);
+      var blob;
+      try {
+        var resp = await fetch(dataUrl);
+        blob = await resp.blob();
+      } catch (fetchErr) {
+        var bin = atob(b64.replace(/\s/g, ''));
+        var u = new Uint8Array(bin.length);
+        for (var j = 0; j < bin.length; j++) u[j] = bin.charCodeAt(j);
+        blob = new Blob([u], { type: mimeType });
+      }
+      var file = new File([blob], name || 'image.jpg', { type: mimeType });
       var dt = new DataTransfer();
       dt.items.add(file);
       var z =

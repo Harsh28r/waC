@@ -108,12 +108,12 @@ async function getFlagUrls() {
   return flagUrls;
 }
 
-// ─── License: activated Pro key only (no trial unlock for product features) ──────
+// ─── License: 7-day premium trial (once) OR Pro key ─────────────────────────────
 // IMPORTANT: keep this secret in sync with key-generator.js → LICENSE_SECRET
 const LICENSE_SECRET = 'wabulkai-secret-2024-xK9mP3qR';
 const TRIAL_DAYS = 7;
-/** Shown when user hits APIs without a valid activated license */
-const LICENSE_REQUIRED_MSG = 'Activate your license key in Settings (side panel) to use bulk messaging, AI, drip, and related features.';
+/** Shown when user hits APIs without trial or Pro */
+const LICENSE_REQUIRED_MSG = 'Start your 7-day premium trial or activate a license key in Settings to use bulk messaging, AI, drip, and related features.';
 
 /** HMAC-SHA256 first 8 hex chars using SubtleCrypto (works in MV3 service worker) */
 async function hmac8(payload) {
@@ -195,16 +195,20 @@ async function getLicense() {
   }
 
   const proActive = plan === 'pro' && expiresAt && now <= expiresAt;
-  const canUsePro = !!proActive;
+  const inTrial = plan === 'trial' && trialEnd && now < trialEnd;
+  const canUsePro = !!(proActive || inTrial);
+  let displayPlan = 'free';
+  if (proActive) displayPlan = 'pro';
+  else if (inTrial) displayPlan = 'trial';
   return {
-    plan: canUsePro ? 'pro' : 'free',
+    plan: displayPlan,
     canUsePro,
     trialUsed: !!trialUsed,
     userId: license.userId || null,
-    trialEnd: null,
-    trialDaysLeft: 0,
-    expiresAt: canUsePro ? expiresAt : null,
-    daysLeft: canUsePro && expiresAt ? Math.ceil((expiresAt - now) / (24 * 60 * 60 * 1000)) : null,
+    trialEnd: inTrial ? trialEnd : null,
+    trialDaysLeft: inTrial ? Math.max(0, Math.ceil((trialEnd - now) / (24 * 60 * 60 * 1000))) : 0,
+    expiresAt: proActive ? expiresAt : null,
+    daysLeft: proActive && expiresAt ? Math.ceil((expiresAt - now) / (24 * 60 * 60 * 1000)) : null,
   };
 }
 
@@ -217,14 +221,15 @@ async function startTrialIfEligible() {
   if (license.trialUsed || license.plan === 'pro' || (license.plan === 'trial' && Date.now() < (license.trialEnd || 0)))
     return { started: false, ...(await getLicense()) };
   const trialEnd = Date.now() + TRIAL_DAYS * 24 * 60 * 60 * 1000;
-  const next = { plan: 'trial', trialEnd, trialUsed: true };
-  await chrome.storage.local.set({ license: next });
+  await chrome.storage.local.set({
+    license: { ...license, plan: 'trial', trialEnd, trialUsed: true },
+  });
   return { started: true, ...(await getLicense()) };
 }
 
 // ─── MAIN world on WA tab (CSP blocks content-script inline <script>) ───────────
 /** Bump when wa-page-main.js behavior changes — stale tabs otherwise keep old IIFE forever. */
-const WA_PAGE_MAIN_API_VERSION = 11;
+const WA_PAGE_MAIN_API_VERSION = 12;
 
 async function ensureWaPageMainApi(tabId) {
   let versionOk = false;
@@ -347,6 +352,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     TRANSLATE_TEXT:         () => translateText(msg.data),
     SET_TASK_ALARM:         () => setTaskAlarm(msg.data),
     CANCEL_TASK_ALARM:      () => cancelTaskAlarm(msg.data),
+    GET_STAGED_MEDIA:       () => getStagedMediaPayload(msg.data?.key),
   };
 
   if (async_handlers[msg.type]) {
@@ -434,9 +440,9 @@ async function runCampaign(data) {
 
     await broadcastProgress({ status: 'sending', currentIndex: i, total: contacts.length, contact: contact.name || contact.phone, phone: contact.phone, variant, preview: message.substring(0, 60) });
 
-      const result = await sendWhatsAppMessage(waTabId, contact.phone, message, settings.stealthMode, imageUrl || null, imageMime, imageName);
+      const result = await sendWhatsAppMessage(waTabId, contact.phone, message, settings.stealthMode, imageUrl || null, imageMime, imageName, stagingKey || null);
     console.log('[WA] Result for', contact.phone, ':', result.success, result.error || '');
-    if (imageUrl && !result.success && result.error) {
+    if ((imageUrl || stagingKey) && !result.success && result.error) {
       chrome.storage.local.set({ lastMediaError: result.error });
     }
 
@@ -479,11 +485,7 @@ async function runCampaign(data) {
     await broadcastProgress({ status: 'completed', total: contacts.length, results, abStats: abEnabled ? { aSent, bSent } : null, campaignStartTime, campaignDurationMs: Date.now() - campaignStartTime });
   } finally {
     campaignRunning = false;
-    if (stagingKey) {
-      try {
-        await chrome.storage.local.remove(stagingKey);
-      } catch (_) {}
-    }
+    await removeStagingKey(stagingKey);
   }
 }
 
@@ -492,8 +494,10 @@ async function quickSend(data) {
   const denied = await denyIfUnlicensed();
   if (denied) return { success: false, error: denied };
   const { phone, message, stealthMode } = data;
+  console.log('[WA-DBG] quickSend: imageStagingKey=', data.imageStagingKey, 'inlineImageLen=', (data.imageUrl||'').length);
   const { imageUrl: resolvedImg, imageMime, imageName, stagingKey } = await resolveInlineOrStagedMedia(data);
   const imageUrl = resolvedImg;
+  console.log('[WA-DBG] quickSend: resolvedImageLen=', (imageUrl||'').length, 'stagingKey=', stagingKey);
   console.log('[WA] Quick send to:', phone, imageUrl ? '(with media)' : '(text only)');
 
   const dncStored = await chrome.storage.local.get('dnc');
@@ -505,17 +509,13 @@ async function quickSend(data) {
   try {
     const tabId = await findOrCreateWATab();
     await sleep(1500);
-    const result = await sendWhatsAppMessage(tabId, phone, message || '', stealthMode || false, imageUrl || null, imageMime || 'image/jpeg', imageName || 'image.jpg');
-    if (imageUrl && !result.success && result.error) {
+    const result = await sendWhatsAppMessage(tabId, phone, message || '', stealthMode || false, imageUrl || null, imageMime || 'image/jpeg', imageName || 'image.jpg', stagingKey || null);
+    if ((imageUrl || stagingKey) && !result.success && result.error) {
       chrome.storage.local.set({ lastMediaError: result.error });
     }
     return result;
   } finally {
-    if (stagingKey) {
-      try {
-        await chrome.storage.local.remove(stagingKey);
-      } catch (_) {}
-    }
+    await removeStagingKey(stagingKey);
   }
 }
 
@@ -773,51 +773,109 @@ async function clearAnalytics() {
   return { success: true };
 }
 
+/** Resolve staged image/video — content scripts cannot use chrome.storage.session (extension contexts only). */
+async function getStagedMediaPayload(key) {
+  if (!key) return null;
+  try {
+    const s = await chrome.storage.session.get(key);
+    const p = s?.[key];
+    if (p?.imageData) return p;
+  } catch (_e) {}
+  try {
+    const l = await chrome.storage.local.get(key);
+    const p = l?.[key];
+    if (p?.imageData) return p;
+    if (p?.chunked && p.chunks > 0) {
+      const chunkKeys = Array.from({ length: p.chunks }, (_, i) => `${key}_c${i}`);
+      const chunkData = await chrome.storage.local.get(chunkKeys);
+      const imageData = chunkKeys.map(k => chunkData[k] || '').join('');
+      return { imageData, imageMime: p.imageMime, imageName: p.imageName, caption: p.caption };
+    }
+  } catch (_e) {}
+  return null;
+}
+
+/** When OPEN_AND_SEND fails, only use /send?phone + SEND_WITH_IMAGE if chat never opened. If we already ran sendImageWithCaption in-tab, a second path duplicates the image (content script state resets on navigation, so requestId dedup is lost). */
+function shouldHardNavMediaFallback(response) {
+  if (response == null) return true;
+  if (response.success) return false;
+  const err = String(response.error || '');
+  return /no search result|chat did not open|not logged in|scan qr/i.test(err);
+}
+
 // ─── WA Tab & Message Sending (navigate per contact — reliable) ─
-async function sendWhatsAppMessage(tabId, phone, message, stealthMode = false, imageUrl = null, imageMime = 'image/jpeg', imageName = 'image.jpg') {
+async function sendWhatsAppMessage(tabId, phone, message, stealthMode = false, imageUrl = null, imageMime = 'image/jpeg', imageName = 'image.jpg', stagingKey = null) {
   try {
     const phoneClean = phone.replace(/[^0-9]/g, '');
     if (!phoneClean) return { success: false, error: 'Invalid phone number' };
-    const sig = `${phoneClean}|${imageUrl ? 'M' : 'T'}|${String(message || '').trim()}`;
+    const hasMedia = !!(imageUrl || stagingKey);
+    const sig = `${phoneClean}|${hasMedia ? 'M' : 'T'}|${String(message || '').trim()}`;
     const now = Date.now();
     const prev = __waRecentSendGuard.get(sig);
     if (prev && (now - prev) < 15000) return { success: true, dedupGuard: true };
     __waRecentSendGuard.set(sig, now);
     const requestId = `wa_${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${phoneClean.slice(-6)}`;
 
-    if (imageUrl) {
+    if (hasMedia) {
       const isVideo = (imageMime || '').startsWith('video/');
       const name = imageName || (isVideo ? 'video.mp4' : 'image.jpg');
-      const payload = { imageData: imageUrl, imageMime, imageName: name, caption: message || '' };
-      try {
-        await chrome.storage.session.set({ waSendImage: payload });
-      } catch (e) {
+
+      // Determine which storage key content.js should read from.
+      // Prefer storing a fresh waSendImage entry so session storage is the fast path.
+      // If both session and local fail (file too large for per-item quota), fall back to
+      // the staging key that sidepanel already wrote — content.js can read it directly.
+      let imageKeyToUse = stagingKey || null; // fallback if storage writes fail
+      const dataLen = (imageUrl || '').length;
+      console.log('[WA-DBG] sendWhatsAppMessage: hasMedia=true, imageUrlLen=', dataLen, 'stagingKey=', stagingKey, 'isVideo=', isVideo);
+
+      if (imageUrl) {
+        const payload = { imageData: imageUrl, imageMime, imageName: name, caption: message || '' };
         try {
-          await chrome.storage.local.set({ waSendImage: payload });
-        } catch (e2) {
-          return { success: false, error: 'Could not store image for send (too large or storage full). Compress the file or use a smaller image.' };
+          await chrome.storage.session.set({ waSendImage: payload });
+          imageKeyToUse = 'waSendImage';
+          console.log('[WA-DBG] stored in SESSION as waSendImage');
+        } catch (_e1) {
+          console.log('[WA-DBG] session storage failed:', _e1.message, '— trying local');
+          try {
+            await chrome.storage.local.set({ waSendImage: payload });
+            imageKeyToUse = 'waSendImage';
+            console.log('[WA-DBG] stored in LOCAL as waSendImage');
+          } catch (_e2) {
+            console.log('[WA-DBG] local storage also failed:', _e2.message, '— using stagingKey fallback:', stagingKey);
+            // Both storage writes failed (file too large for per-item quota).
+            // Use staging key if available — content.js reads chunked data from it directly.
+            if (!stagingKey) {
+              return { success: false, error: 'Could not store media for send — file is too large. Use a smaller image or compress the video.' };
+            }
+            // imageKeyToUse already set to stagingKey above
+          }
         }
       }
+
+      console.log('[WA-DBG] imageKeyToUse=', imageKeyToUse);
+      if (!imageKeyToUse) {
+        return { success: false, error: 'No media storage key — attach the file again and retry.' };
+      }
+
       await sleep(120);
       // Fast path: in-tab navigation via sidebar search (no full WA reload)
-      const dataLen = (payload.imageData || '').length;
       const fastPayload = {
         type: 'OPEN_AND_SEND',
         requestId,
         phone: phoneClean,
-        imageKey: 'waSendImage',
-        imageMime: payload.imageMime,
-        imageName: payload.imageName,
-        caption: payload.caption,
-        message: payload.caption
+        imageKey: imageKeyToUse,
+        imageMime,
+        imageName: name,
+        caption: message || '',
+        message: message || ''
       };
-      if (dataLen < 120000) fastPayload.imageData = payload.imageData;
-      let response = await sendMessageToTab(tabId, fastPayload, 5);
+      if (dataLen > 0 && dataLen < 120000) fastPayload.imageData = imageUrl;
+      // Give more retries for video — content script waits up to 45 s for WA to process
+      let response = await sendMessageToTab(tabId, fastPayload, isVideo ? 8 : 5);
 
-      // Fallback: hard nav — navigate via WA's own /send?phone URL (served from PWA cache,
-      // much faster than a cold load).  waitForWAReady() polls the PING handler so we don't
-      // waste the 8-9 s fixed sleep when WA boots in 2-3 s.
-      if (!response || !response.success) {
+      // Fallback: hard nav + SEND_WITH_IMAGE only when sidebar search failed to open chat.
+      // Do NOT run after media-send errors — that produced "one bare image + one with caption" duplicates.
+      if (shouldHardNavMediaFallback(response)) {
         await chrome.tabs.update(tabId, { url: `https://web.whatsapp.com/send?phone=${phoneClean}`, active: !stealthMode });
         await sleep(800);
         await waitForTabLoad(tabId);
@@ -825,12 +883,12 @@ async function sendWhatsAppMessage(tabId, phone, message, stealthMode = false, i
         const navPayload = {
           type: 'SEND_WITH_IMAGE',
           requestId,
-          imageKey: 'waSendImage',
-          imageMime: payload.imageMime,
-          imageName: payload.imageName,
-          caption: payload.caption
+          imageKey: imageKeyToUse,
+          imageMime,
+          imageName: name,
+          caption: message || ''
         };
-        if (dataLen < 120000) navPayload.imageData = payload.imageData;
+        if (dataLen > 0 && dataLen < 120000) navPayload.imageData = imageUrl;
         response = await sendMessageToTab(tabId, navPayload, 8);
       }
       return response || { success: false, error: 'No response from WA page — is WA Web logged in?' };
@@ -937,10 +995,32 @@ async function resolveInlineOrStagedMedia(data) {
         imageUrl = p.imageData;
         imageMime = p.imageMime || imageMime;
         imageName = p.imageName || imageName;
+      } else if (p?.chunked && p.chunks > 0) {
+        // Large file stored in chunks — reassemble
+        const chunkKeys = Array.from({ length: p.chunks }, (_, i) => `${key}_c${i}`);
+        const chunkData = await chrome.storage.local.get(chunkKeys);
+        imageUrl = chunkKeys.map(k => chunkData[k] || '').join('');
+        imageMime = p.imageMime || imageMime;
+        imageName = p.imageName || imageName;
       }
     } catch (_) {}
   }
   return { imageUrl, imageMime, imageName, stagingKey: key };
+}
+
+/** Remove a staging key and all its chunk keys from chrome.storage.local. */
+async function removeStagingKey(key) {
+  if (!key) return;
+  try {
+    const r = await chrome.storage.local.get(key);
+    const meta = r[key];
+    if (meta?.chunked && meta.chunks > 0) {
+      const chunkKeys = Array.from({ length: meta.chunks }, (_, i) => `${key}_c${i}`);
+      await chrome.storage.local.remove([key, ...chunkKeys]);
+    } else {
+      await chrome.storage.local.remove(key);
+    }
+  } catch (_) {}
 }
 
 function fillTemplateValue(v) {

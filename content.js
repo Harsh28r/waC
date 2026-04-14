@@ -584,15 +584,15 @@ async function sendImageWithCaption(imageData, imageMime, imageName, caption) {
   const isVideo = mime.startsWith('video/');
   const defaultName = imageName || (isVideo ? 'video.mp4' : 'image.jpg');
 
+  // Extract bare base64 (strip data:...;base64, header if present) for DOM holder
   const commaIdx = (imageData || '').indexOf(',');
   const base64 = commaIdx >= 0 ? (imageData || '').slice(commaIdx + 1).trim() : (imageData || '').trim();
   if (!base64) { const e = 'Invalid media data'; console.error('[WA-MEDIA] FAIL:', e); _storeMediaError(e); return { success: false, error: e }; }
-  let binary;
-  try { binary = atob(base64.replace(/\s/g, '')); } catch (e) { const err = 'Invalid file data'; console.error('[WA-MEDIA] FAIL:', err, e); _storeMediaError(err); return { success: false, error: err }; }
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  const file = new File([new Blob([bytes], { type: mime })], defaultName, { type: mime });
-  _mediaLog('file created', defaultName, file.size, 'bytes');
+  // Validate base64 is decodeable without blocking the main thread
+  if (base64.length < 200) {
+    try { atob(base64.replace(/\s/g, '')); } catch (e) { const err = 'Invalid file data'; console.error('[WA-MEDIA] FAIL:', err, e); _storeMediaError(err); return { success: false, error: err }; }
+  }
+  _mediaLog('media ready, base64 len:', base64.length);
 
   const _checkMediaPreview = () => !!(
     // WA Web 2025 media editor — confirmed selectors from live DOM
@@ -663,6 +663,8 @@ async function sendImageWithCaption(imageData, imageMime, imageName, caption) {
       await sleep(500);
 
       // Step 3: Try sorted file inputs (pickIndex 0..n) — WA mounts several type=file; only one is gallery.
+      // For video, give each inject attempt much more time — WA needs to decode/thumbnail the file.
+      const injectQuickWait = isVideo ? 6000 : 800;
       let s2result = {};
       inject: for (let inj = 0; inj < 18; inj++) {
         for (let pick = 0; pick < 14; pick++) {
@@ -670,7 +672,7 @@ async function sendImageWithCaption(imageData, imageMime, imageName, caption) {
           s2result = await waPageMain('galleryInject', [mime, defaultName, pick]);
           if (s2result && s2result.error === 'pickIndex_oob') break;
           if (s2result && s2result.ok) {
-            await sleep(isVideo ? 1100 : 800);
+            await sleep(injectQuickWait);
             if (_checkMediaPreview()) break inject;
           }
         }
@@ -679,12 +681,14 @@ async function sendImageWithCaption(imageData, imageMime, imageName, caption) {
       }
       _mediaLog('gallery inject result:', JSON.stringify(s2result));
       if (s2result && s2result.ok) {
-        await sleep(isVideo ? 5500 : 3500);
+        // Videos need extra time for WA to finish processing/encoding before the preview appears
+        await sleep(isVideo ? 18000 : 3500);
       } else {
         console.warn('[WA-MEDIA] gallery inject failed — will try drag-drop:', s2result);
       }
     } else {
       _mediaLog('attach button not found, trying direct galleryInject');
+      const injectQuickWait2 = isVideo ? 6000 : 800;
       let s2result = {};
       inject2: for (let inj = 0; inj < 10; inj++) {
         for (let pick = 0; pick < 12; pick++) {
@@ -692,7 +696,7 @@ async function sendImageWithCaption(imageData, imageMime, imageName, caption) {
           s2result = await waPageMain('galleryInject', [mime, defaultName, pick]);
           if (s2result && s2result.error === 'pickIndex_oob') break;
           if (s2result && s2result.ok) {
-            await sleep(isVideo ? 1100 : 800);
+            await sleep(injectQuickWait2);
             if (_checkMediaPreview()) break inject2;
           }
         }
@@ -714,12 +718,14 @@ async function sendImageWithCaption(imageData, imageMime, imageName, caption) {
     _waPutB64InDom(base64);
     const ddResult = await waPageMain('dragDrop', [mime, defaultName]);
     _mediaLog('drag-drop result:', JSON.stringify(ddResult));
-    await sleep(isVideo ? 5000 : 4000);
+    await sleep(isVideo ? 12000 : 4000);
   }
 
-  // Wait up to 6s for media preview to render before checking
+  // Wait up to 45s for video (large files need time to process), 6s for images
+  const previewPollMs = isVideo ? 500 : 300;
+  const previewPollMax = isVideo ? 90 : 20;
   if (!_checkMediaPreview()) {
-    for (let _mpi = 0; _mpi < 20; _mpi++) { await sleep(300); if (_checkMediaPreview()) break; }
+    for (let _mpi = 0; _mpi < previewPollMax; _mpi++) { await sleep(previewPollMs); if (_checkMediaPreview()) break; }
   }
   sendBtn = sendBtn || await _waitForMediaOrComposeSend(10000);
   if (!sendBtn) { const e = 'Send button not found — media preview did not open'; console.error('[WA-MEDIA] FAIL:', e); _storeMediaError(e); return { success: false, error: e }; }
@@ -812,6 +818,17 @@ async function sendImageWithCaption(imageData, imageMime, imageName, caption) {
   await waPageMain('stickerOff', []);
   await sleep(400);
 
+  // After any send attempt, poll until the media editor is gone. A single 1.2s sleep was too
+  // short — WA often removes the dialog slowly, so we'd run Enter then clickSend and ship twice.
+  const _waitAfterSendAttempt = async (maxMs = 8000) => {
+    const step = 200;
+    for (let t = 0; t < maxMs; t += step) {
+      await sleep(step);
+      if (!_checkMediaPreview()) return true;
+    }
+    return false;
+  };
+
   // ── Multi-method send: try every approach until preview closes ──
   // Method 1: Enter key on the caption element (most reliable in WA media preview)
   _mediaLog('send method 1: Enter key on caption');
@@ -825,34 +842,36 @@ async function sendImageWithCaption(imageData, imageMime, imageName, caption) {
   };
   // Try Enter from main world first (most reliable for Lexical editor)
   await waPageMain('sendEnterCap', []);
-  await sleep(1200);
-  if (!_checkMediaPreview()) { _mediaLog('sent via main-world Enter key'); return { success: true }; }
+  if (await _waitAfterSendAttempt(8000)) { _mediaLog('sent via main-world Enter key'); return { success: true }; }
   // Fallback: content-script Enter
   const captionFocusEl = _findCaptionEl();
   await _pressEnterOn(captionFocusEl);
-  await sleep(1200);
-  if (!_checkMediaPreview()) { _mediaLog('sent via content-script Enter key'); return { success: true }; }
+  if (await _waitAfterSendAttempt(8000)) { _mediaLog('sent via content-script Enter key'); return { success: true }; }
 
   // Method 2: Click send button from main world (React's own context)
   // Based on live WA Web 2025 DOM: send button is div[role="button"][aria-label="Send"]
   _mediaLog('send method 2: main-world send button click');
   await waPageMain('clickSend', []);
-  await sleep(1200);
-  if (!_checkMediaPreview()) { _mediaLog('sent via main-world click'); return { success: true }; }
+  if (await _waitAfterSendAttempt(8000)) { _mediaLog('sent via main-world click'); return { success: true }; }
 
   // Method 3: Enter key from main world on caption
   _mediaLog('send method 3: main-world Enter key');
   await waPageMain('sendEnterCap2', []);
-  await sleep(1200);
-  if (!_checkMediaPreview()) { _mediaLog('sent via main-world Enter'); return { success: true }; }
+  if (await _waitAfterSendAttempt(8000)) { _mediaLog('sent via main-world Enter'); return { success: true }; }
 
   // Method 4: Content-script click fallback — media dialog first
   _mediaLog('send method 4: content-script send button click');
   const finalSendBtn = _findSendInOpenMediaDialog() || await waitForElIncludingShadow(SEL.sendButton, 5000);
   if (finalSendBtn) {
     finalSendBtn.click();
-    await sleep(1500);
-    if (!_checkMediaPreview()) { _mediaLog('sent via content-script click'); return { success: true }; }
+    if (await _waitAfterSendAttempt(8000)) { _mediaLog('sent via content-script click'); return { success: true }; }
+  }
+
+  // Slow DOM teardown: avoid reporting failure while preview is still visible → background runs
+  // hard-nav + SEND_WITH_IMAGE and the chat gets the same media twice.
+  if (_checkMediaPreview()) {
+    _mediaLog('late settle poll after all send attempts');
+    if (await _waitAfterSendAttempt(5000)) { _mediaLog('sent — preview closed on late settle'); return { success: true }; }
   }
 
   if (_checkMediaPreview()) {
@@ -2030,16 +2049,24 @@ function injectMeetingStyles() {
       max-width: 280px; word-wrap: break-word;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     }
+    /* ── Hide WA native filter chips visually — keep in DOM so WA state stays alive ── */
+    [role="tablist"][aria-label="chat-list-filters"] {
+      height: 0 !important; min-height: 0 !important; overflow: hidden !important;
+      opacity: 0 !important; pointer-events: none !important;
+      margin: 0 !important; padding: 0 !important; border: none !important;
+    }
     /* ── Label Filter Bar ── */
     #wa-label-bar {
-      position: fixed !important; display: flex !important; align-items: center !important;
-      gap: 6px !important; padding: 5px 10px !important; background: #111b21 !important;
-      border-bottom: 1px solid #2a3942 !important; z-index: 9997 !important;
+      display: flex !important; align-items: center !important; flex-shrink: 0 !important;
+      gap: 6px !important; padding: 6px 10px !important; background: #111b21 !important;
+      border-bottom: 1px solid #2a3942 !important;
       overflow-x: auto !important; box-sizing: border-box !important;
+      scrollbar-width: none !important;
     }
+    #wa-label-bar::-webkit-scrollbar { display: none !important; }
     .wa-label-chip {
       display: inline-flex; align-items: center; gap: 4px;
-      padding: 3px 10px; border-radius: 14px; font-size: 11px; font-weight: 600;
+      padding: 4px 12px; border-radius: 14px; font-size: 12px; font-weight: 600;
       cursor: pointer; white-space: nowrap; border: 1px solid transparent;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       transition: all 0.15s; color: #8696a0; background: #2a3942;
@@ -2145,22 +2172,19 @@ function injectMeetingStyles() {
       position: fixed;
       display: none;
       align-items: center;
-      gap: 7px;
+      justify-content: center;
       background: #005c4b;
       color: #00a884;
-      border: 1.5px solid #00a884;
-      border-radius: 22px;
-      padding: 8px 16px 8px 11px;
-      font-size: 12px;
-      font-weight: 700;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      border: 2px solid #00a884;
+      border-radius: 50px;
+      padding: 10px 18px;
       cursor: pointer;
       z-index: 9990;
       box-shadow: 0 4px 20px rgba(0,168,132,0.28);
       transition: background 0.15s, transform 0.1s, box-shadow 0.15s;
-      white-space: nowrap;
-      letter-spacing: 0.2px;
     }
+    #wa-meet-fab svg { width: 22px; height: 22px; }
+    #wa-meet-fab span { display: none; }
     #wa-meet-fab.wfab-on { display: flex; }
     #wa-meet-fab:hover {
       background: #006e5c;
@@ -2495,7 +2519,7 @@ function togglePrivacyMode() {
 }
 
 // ── Schedule Meeting FAB (floating above quick-reply strip in open chat) ───────
-const SVG_CAL_FAB = `<svg width="15" height="15" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="3" width="13" height="11.5" rx="1.5" stroke="currentColor" stroke-width="1.4"/><path d="M1.5 6.5h13" stroke="currentColor" stroke-width="1.4"/><path d="M5 1.5V4M11 1.5V4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="5.5" cy="9.5" r=".75" fill="currentColor"/><circle cx="8" cy="9.5" r=".75" fill="currentColor"/><circle cx="10.5" cy="9.5" r=".75" fill="currentColor"/><circle cx="5.5" cy="12" r=".75" fill="currentColor"/><circle cx="8" cy="12" r=".75" fill="currentColor"/></svg>`;
+const SVG_CAL_FAB = `<svg width="22" height="22" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="3" width="13" height="11.5" rx="1.5" stroke="currentColor" stroke-width="1.4"/><path d="M1.5 6.5h13" stroke="currentColor" stroke-width="1.4"/><path d="M5 1.5V4M11 1.5V4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="5.5" cy="9.5" r=".75" fill="currentColor"/><circle cx="8" cy="9.5" r=".75" fill="currentColor"/><circle cx="10.5" cy="9.5" r=".75" fill="currentColor"/><circle cx="5.5" cy="12" r=".75" fill="currentColor"/><circle cx="8" cy="12" r=".75" fill="currentColor"/></svg>`;
 
 function positionMeetingFAB() {
   const fab    = document.getElementById('wa-meet-fab');
@@ -2510,9 +2534,10 @@ function positionMeetingFAB() {
                        ? (strip.getBoundingClientRect().height || 0) : 0;
   const mainRect   = main.getBoundingClientRect();
 
-  // Sit above the footer (+ strip if open), aligned to right edge of #main
+  // Sit above the footer (+ strip if open), aligned to LEFT edge of #main
   fab.style.bottom = (window.innerHeight - footerRect.top + stripH + 14) + 'px';
-  fab.style.right  = (window.innerWidth - mainRect.right + 18) + 'px';
+  fab.style.right  = '';
+  fab.style.left   = (mainRect.left + 18) + 'px';
   fab.classList.add('wfab-on');
 }
 
@@ -3066,18 +3091,35 @@ function ensureLabelFilterBar() {
     return;
   }
 
+  // Make sure WA's native "All" tab is selected so all chats are shown
+  // (CSS collapses the tablist to height:0 but keeps it functional)
+  const waTablist = document.querySelector('[role="tablist"][aria-label="chat-list-filters"]');
+  if (waTablist) {
+    const allTab = Array.from(waTablist.querySelectorAll('[role="tab"]'))
+      .find(t => t.textContent.trim() === 'All');
+    if (allTab && allTab.getAttribute('aria-selected') !== 'true') allTab.click();
+  }
+
   if (!document.getElementById('wa-label-bar')) {
     const bar = document.createElement('div');
     bar.id = 'wa-label-bar';
     bar.innerHTML = `
       <button class="wa-label-chip active" data-filter="all">All</button>
       <button class="wa-label-chip" data-filter="unread">Unread</button>
-      <button class="wa-label-chip" data-filter="one-to-one">One to One</button>
+      <button class="wa-label-chip" data-filter="one-to-one">1 to 1</button>
       <button class="wa-label-chip" data-filter="groups">Groups</button>
-      <button class="wa-label-chip" data-filter="waiting">⏳ Awaiting Reply</button>
-      <button class="wa-label-chip" data-filter="mentions">@ Mentions</button>
+      <button class="wa-label-chip" data-filter="waiting">Awaiting Reply</button>
+      <button class="wa-label-chip" data-filter="mentions">@Mentions</button>
     `;
-    document.body.appendChild(bar);
+
+    // Insert inline in the sidebar, right where the WA native tablist is
+    if (waTablist && waTablist.parentElement) {
+      waTablist.parentElement.insertBefore(bar, waTablist);
+    } else if (pane.parentElement) {
+      pane.parentElement.insertBefore(bar, pane);
+    } else {
+      document.body.appendChild(bar);
+    }
 
     bar.querySelectorAll('.wa-label-chip').forEach(chip => {
       chip.addEventListener('click', () => {
@@ -3085,104 +3127,127 @@ function ensureLabelFilterBar() {
         bar.querySelectorAll('.wa-label-chip').forEach(c => c.classList.remove('active'));
         chip.classList.add('active');
         function runFilter() {
-          applyLabelFilter(currentLabelFilter);
           if (currentLabelFilter === 'all') {
-            getVisibleChatRows().forEach(r => { r.style.removeProperty('display'); });
+            getVisibleChatRows().forEach(r => r.style.removeProperty('display'));
+          } else {
+            applyLabelFilter(currentLabelFilter);
           }
         }
         runFilter();
         setTimeout(runFilter, 150);
         setTimeout(runFilter, 500);
-        if (currentLabelFilter !== 'all') {
-          startLabelObserver();
-        } else {
-          stopLabelObserver();
-        }
+        if (currentLabelFilter !== 'all') startLabelObserver();
+        else stopLabelObserver();
       });
     });
   }
-  positionLabelBar();
 }
 
 function positionLabelBar() {
-  const bar  = document.getElementById('wa-label-bar');
-  const pane = document.querySelector('#pane-side');
-  if (!bar || !pane) return;
-  const r = pane.getBoundingClientRect();
-  bar.style.top   = r.top + 'px';
-  bar.style.left  = r.left + 'px';
-  bar.style.width = r.width + 'px';
+  // No-op: bar is now inline in the DOM, no fixed positioning needed
 }
 
-// Chat list: find row = parent of cell-frame-container (works across WA versions)
+// Chat list: find rows using the current WA Web grid structure
 function getVisibleChatRows() {
+  // Current WA Web uses role="grid" with aria-label="Chat list"
+  const grid = document.querySelector('[role="grid"][aria-label="Chat list"]');
+  if (grid) {
+    const rows = Array.from(grid.querySelectorAll('[role="row"]')).filter(r => r.offsetHeight > 0);
+    if (rows.length) return rows;
+  }
+
+  // Fallback: old data-id approach
   const pane = document.querySelector('#pane-side');
   if (!pane) return [];
-  const cells = pane.querySelectorAll('[data-testid="cell-frame-container"]');
-  if (!cells.length) return [];
   const seen = new Set();
   const rows = [];
-  cells.forEach(cell => {
+  pane.querySelectorAll('[data-id]').forEach(el => {
+    const id = el.dataset.id || '';
+    if (/(@c\.us|@g\.us|@broadcast|@newsletter|@lid)/.test(id) && !seen.has(el)) {
+      seen.add(el); rows.push(el);
+    }
+  });
+  if (rows.length) return rows.filter(el => el.offsetHeight > 0);
+
+  // Last resort: cell-frame-container
+  pane.querySelectorAll('[data-testid="cell-frame-container"]').forEach(cell => {
     let row = cell.parentElement;
     if (!row || row === pane) row = cell;
-    while (row && row.parentElement && row.parentElement !== pane && row.offsetHeight < 50) {
-      row = row.parentElement;
-    }
-    if (row && !seen.has(row)) {
-      seen.add(row);
-      rows.push(row);
-    }
+    if (row && !seen.has(row)) { seen.add(row); rows.push(row); }
   });
   return rows.filter(el => el && el.offsetHeight > 0);
 }
 
+// Read React fiber props from a chat row element
+function getRowFiberProps(row) {
+  const fk = Object.keys(row).find(k => k.startsWith('__reactFiber'));
+  if (!fk) return null;
+  let f = row[fk];
+  let depth = 0;
+  while (f && depth < 25) {
+    if (f.memoizedProps && 'unreadStyle' in f.memoizedProps) return f.memoizedProps;
+    f = f.child || f.sibling || (f.return ? f.return.sibling : null);
+    depth++;
+  }
+  return null;
+}
+
+function _hasUnreadBadge(row) {
+  // Fiber-based (most reliable)
+  const props = getRowFiberProps(row);
+  if (props) return !!props.unreadStyle;
+  // DOM fallback
+  return !!(
+    row.querySelector('[data-testid="icon-unread-count"]') ||
+    row.querySelector('[data-testid="unread-count"]') ||
+    row.querySelector('[data-icon="unread-count"]') ||
+    row.querySelector('[class*="unread"]') ||
+    Array.from(row.querySelectorAll('span')).some(s => {
+      const t = s.textContent.trim();
+      return /^\d+$/.test(t) && s.offsetWidth > 0 && s.offsetWidth < 36 && s.offsetHeight < 36;
+    })
+  );
+}
+
 function rowMatchesFilter(row, filter) {
   if (filter === 'all') return true;
-  const text = (row.textContent || '').trim();
+
+  const props = getRowFiberProps(row);
 
   if (filter === 'unread') {
-    return !!(
-      row.querySelector('[data-testid="icon-unread-count"]') ||
-      row.querySelector('[data-testid="icon-unread"]') ||
-      row.querySelector('[aria-label*="unread"]') ||
-      row.querySelector('[aria-label*="Unread"]') ||
-      row.querySelector('.unread-count') ||
-      row.querySelector('[data-icon="unread-count"]') ||
-      row.querySelector('[data-icon="unread"]') ||
-      row.querySelector('span[class*="unread"]') ||
-      row.querySelector('[class*="unread"]')
-    );
+    if (props) return !!props.unreadStyle;
+    return _hasUnreadBadge(row);
   }
-  if (filter === 'one-to-one') return !isRowGroup(row);
-  if (filter === 'groups') return isRowGroup(row);
+
+  if (filter === 'groups' || filter === 'one-to-one') {
+    const id = props ? String(props.id || '') : getRowDataId(row);
+    const isGroup = id.endsWith('@g.us');
+    return filter === 'groups' ? isGroup : !isGroup;
+  }
 
   if (filter === 'waiting') {
-    const waitingText = /Waiting for this message/i.test(text);
-    const hasSent = !!(
-      row.querySelector('[data-icon="msg-dblcheck"]') ||
-      row.querySelector('[data-icon="msg-check"]') ||
-      row.querySelector('[data-icon="msg-time"]') ||
-      row.querySelector('[data-testid="msg-dblcheck"]') ||
-      row.querySelector('[data-testid="msg-check"]') ||
-      waitingText
-    );
-    const hasUnread = !!(
-      row.querySelector('[data-testid="icon-unread-count"]') ||
-      row.querySelector('[data-testid="icon-unread"]')
-    );
-    return hasSent && !hasUnread;
+    // Awaiting reply: last message was sent by ME (outgoing tick present), no unread from them
+    // Outgoing tick SVG has viewBox="0 0 18 18" in current WA Web
+    const hasTick = !!row.querySelector('svg[viewBox="0 0 18 18"]');
+    const isUnread = props ? !!props.unreadStyle : _hasUnreadBadge(row);
+    return hasTick && !isUnread;
   }
 
   if (filter === 'mentions') {
+    if (props && props.secondaryDetail && props.secondaryDetail.props) {
+      return !!props.secondaryDetail.props.unreadMentionIcon;
+    }
+    // DOM fallback
     return !!(
       row.querySelector('[data-icon="at-mentioned"]') ||
+      row.querySelector('[data-icon="at"]') ||
       row.querySelector('[data-testid="at-mentioned"]') ||
-      row.querySelector('[aria-label*="mention"]') ||
-      row.querySelector('[aria-label*="Mention"]') ||
-      /@\d{10,}/.test(text) ||
-      /@[\w\u00a0-\uffff]+/.test(text)
+      Array.from(row.querySelectorAll('span')).some(s =>
+        s.children.length === 0 && /@\w/.test(s.textContent)
+      )
     );
   }
+
   return true;
 }
 
@@ -3250,15 +3315,17 @@ function getRowDataId(row) {
 }
 
 function isRowGroup(row) {
-  const id = getRowDataId(row);
+  // Fiber-based (most reliable with current WA Web)
+  const props = getRowFiberProps(row);
+  if (props) return String(props.id || '').endsWith('@g.us');
+  // DOM fallback: data-id attribute
+  const id = row.dataset?.id || getRowDataId(row);
   if (id.endsWith('@g.us')) return true;
-  // Fallback: WA Web often uses group avatar/icon in the row
+  // Icon fallback
   if (row.querySelector && (
-    row.querySelector('[data-icon*="group"]') ||
     row.querySelector('[data-icon="default-group"]') ||
     row.querySelector('[data-icon="group"]') ||
-    row.querySelector('[aria-label*="roup"]') ||
-    row.querySelector('[title*="roup"]')
+    row.querySelector('[data-icon*="group"]')
   )) return true;
   return false;
 }
@@ -4119,17 +4186,22 @@ async function sendBulkMessage(text, reqId) {
 
 // ─── Message Listener ─────────────────────────────────────────────────────────
 async function _getWaImagePayloadByKey(key) {
-  if (!key) return null;
+  if (!key) { console.warn('[WA-DBG] _getWaImagePayloadByKey: key is null/undefined'); return null; }
+  console.warn('[WA-DBG] _getWaImagePayloadByKey: looking up key:', key);
+  // Session + chunked resolution runs in the service worker — content scripts cannot use chrome.storage.session.
   try {
-    const s = await chrome.storage.session.get(key);
-    const p = s?.[key];
-    if (p?.imageData) return p;
-  } catch (_) {}
-  try {
-    const l = await chrome.storage.local.get(key);
-    const p = l?.[key];
-    if (p?.imageData) return p;
-  } catch (_) {}
+    const p = await new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage({ type: 'GET_STAGED_MEDIA', data: { key } }, (r) => {
+        if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+        else resolve(r);
+      });
+    });
+    if (p?.imageData) {
+      console.warn('[WA-DBG] staged payload from SW, dataLen:', p.imageData.length);
+      return p;
+    }
+  } catch (e) { console.warn('[WA-DBG] GET_STAGED_MEDIA:', e.message); }
+  console.warn('[WA-DBG] _getWaImagePayloadByKey: RETURNING NULL for key:', key);
   return null;
 }
 
@@ -4164,9 +4236,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'SEND_WITH_IMAGE') {
     if (!_beginReq(msg.requestId)) { sendResponse({ success: true, dedup: true }); return false; }
     (async () => {
+      console.warn('[WA-DBG] SEND_WITH_IMAGE: imageKey=', msg.imageKey, 'inlineLen=', (msg.imageData||'').length);
       let imageData = msg.imageData, imageMime = msg.imageMime, imageName = msg.imageName, caption = msg.caption;
       if (msg.imageKey) {
         const p = await _getWaImagePayloadByKey(msg.imageKey);
+        console.warn('[WA-DBG] SEND_WITH_IMAGE: payload from key:', p ? `dataLen=${p.imageData?.length} mime=${p.imageMime}` : 'NULL');
         if (p?.imageData) {
           imageData = p.imageData;
           imageMime = p.imageMime || imageMime;
@@ -4185,11 +4259,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'OPEN_AND_SEND') {
     if (!_beginReq(msg.requestId)) { sendResponse({ success: true, dedup: true }); return false; }
     (async () => {
+      console.warn('[WA-DBG] OPEN_AND_SEND: imageKey=', msg.imageKey, 'inlineLen=', (msg.imageData||'').length, 'phone=', msg.phone);
       const nav = await openChatByPhone(msg.phone);
       if (!nav.success) return sendResponse(nav);
       let imageData = msg.imageData, imageMime = msg.imageMime, imageName = msg.imageName, caption = msg.caption;
       if (msg.imageKey) {
         const p = await _getWaImagePayloadByKey(msg.imageKey);
+        console.warn('[WA-DBG] OPEN_AND_SEND: payload from key:', p ? `dataLen=${p.imageData?.length} mime=${p.imageMime}` : 'NULL');
         if (p?.imageData) {
           imageData = p.imageData;
           imageMime = p.imageMime;
@@ -4197,6 +4273,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           caption = p.caption ?? msg.message ?? caption;
         }
       }
+      console.warn('[WA-DBG] OPEN_AND_SEND: final imageData len=', (imageData||'').length, 'will send:', imageData ? 'WITH IMAGE' : 'TEXT ONLY');
       if (_alreadySentReq(msg.requestId)) return sendResponse({ success: true, dedup: true });
       if (imageData) {
         const r = await sendImageWithCaption(imageData, imageMime, imageName, caption || msg.message || '');

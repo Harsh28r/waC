@@ -41,7 +41,7 @@
     <button class="tab requires-license" data-tab="report" data-phase="2">📈 Data Report</button>
   </div>
   <div class="license-gate-banner" id="licenseGateBanner" style="display:none">
-    🔒 <strong>Activation required</strong> — Paste your license key in <strong>Settings</strong> below to unlock bulk send, AI, drip, CRM, and analytics.
+    🔒 <strong>Activation required</strong> — Start your <strong>7-day premium trial</strong> or paste a license key in <strong>Settings</strong> (bulk send, AI, drip, CRM, analytics).
   </div>
   <div class="phase1-teaser" id="phase1Teaser" style="display:none">Bulk campaigns, Drip, AI Reply &amp; more — coming in next update.</div>
 
@@ -712,8 +712,8 @@
     <div class="panel" id="panel-tasks">
       <div class="section-badge mb-6">✅ Task Manager</div>
       <p class="hint mb-8">Tasks sync with WhatsApp Web. You’ll get a <strong>browser notification</strong> at the reminder time.</p>
+      <button type="button" class="btn btn-outline btn-sm mb-8" id="mtg-toggleBtn" title="Schedule Meeting" style="align-self:flex-start">📅 Schedule Meeting</button>
       <div class="task-sp-tabs row gap-6 mb-8" style="align-items:center">
-        <button type="button" class="btn-mtg-icon" id="mtg-toggleBtn" title="Schedule Meeting">📅</button>
         <button type="button" class="btn btn-outline btn-sm task-sp-nav active" data-task-filter="today">Today</button>
         <button type="button" class="btn btn-outline btn-sm task-sp-nav" data-task-filter="tomorrow">Tomorrow</button>
         <button type="button" class="btn btn-outline btn-sm task-sp-nav" data-task-filter="later">Later</button>
@@ -816,8 +816,9 @@
           <div class="section-title">🔑 License</div>
           <span id="lic-badge" class="plan-pill">Free</span>
         </div>
-        <p class="hint mb-6">Bulk messaging, AI, drip, CRM, and analytics stay locked until you paste a valid <strong>license key</strong> below. After activation, your <strong>User ID</strong> appears under “License”.</p>
+        <p class="hint mb-6" id="lic-hint-static">Everyone gets <strong>one 7-day premium trial</strong> (full features). After that, paste a <strong>license key</strong> — your <strong>User ID</strong> shows here once activated.</p>
         <div id="lic-info" class="hint mb-8" style="display:none"></div>
+        <button type="button" class="btn btn-primary btn-sm mb-8" id="lic-startTrialBtn" style="width:100%;display:none">⚡ Start 7-day premium trial</button>
         <div id="lic-activate-wrap">
           <input type="text" id="lic-key-input" class="input mb-6" placeholder="WABAI-USRxxxxxx-PRO-xxxxxxxxxx-XXXXXXXX" autocomplete="off" spellcheck="false">
           <button class="btn btn-green btn-sm" id="lic-activateBtn" style="width:100%">🔓 Activate license</button>

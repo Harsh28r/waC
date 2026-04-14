@@ -249,15 +249,20 @@ function renderPlanBadge(lic) {
       pill.textContent = 'Pro';
       pill.className = 'plan-pill pro';
       pill.title = lic.userId ? `Pro · User ID: ${lic.userId}` : 'Pro';
+    } else if (lic.plan === 'trial') {
+      pill.textContent = `Trial · ${lic.trialDaysLeft}d`;
+      pill.className = 'plan-pill trial';
+      pill.title = '7-day premium trial active — add a license key anytime';
     } else {
       pill.textContent = 'Locked';
       pill.className = 'plan-pill';
-      pill.title = 'Activate your license key in Settings';
+      pill.title = 'Start 7-day trial or activate license in Settings';
     }
   }
   const badge = document.getElementById('lic-badge');
   const info = document.getElementById('lic-info');
   const wrap = document.getElementById('lic-activate-wrap');
+  const trialBtn = document.getElementById('lic-startTrialBtn');
   if (badge) {
     if (lic.plan === 'pro') {
       badge.textContent = '✅ Pro';
@@ -268,6 +273,17 @@ function renderPlanBadge(lic) {
         info.style.display = 'block';
       }
       if (wrap) wrap.style.display = 'none';
+      if (trialBtn) trialBtn.style.display = 'none';
+    } else if (lic.plan === 'trial') {
+      badge.textContent = `⭐ Trial · ${lic.trialDaysLeft}d`;
+      badge.className = 'plan-pill trial';
+      if (info) {
+        const end = lic.trialEnd ? new Date(lic.trialEnd).toLocaleString() : '—';
+        info.textContent = `Premium trial active until ${end}. Paste a license key below anytime — your User ID appears after activation.`;
+        info.style.display = 'block';
+      }
+      if (wrap) wrap.style.display = 'block';
+      if (trialBtn) trialBtn.style.display = 'none';
     } else {
       badge.textContent = 'Locked';
       badge.className = 'plan-pill';
@@ -276,16 +292,29 @@ function renderPlanBadge(lic) {
         info.style.display = 'none';
       }
       if (wrap) wrap.style.display = 'block';
+      if (trialBtn) trialBtn.style.display = lic.plan === 'free' && !lic.trialUsed ? 'block' : 'none';
     }
   }
   applyLicenseShell(lic);
 }
 
-/** Valid activated license required (no trial unlock for product features) */
+/** Premium = active trial or Pro key */
 async function ensureActivatedLicense() {
-  const lic = await new Promise(r => chrome.runtime.sendMessage({ type: 'GET_LICENSE' }, r));
+  let lic = await new Promise(r => chrome.runtime.sendMessage({ type: 'GET_LICENSE' }, r));
   if (!lic || lic.canUsePro) return { ok: true };
-  return { ok: false, message: 'Activate your license key in Settings to use this feature.' };
+  if (!lic.trialUsed) {
+    const t = await new Promise(r => chrome.runtime.sendMessage({ type: 'START_TRIAL' }, r));
+    if (t?.started) {
+      showToast(`7-day premium trial started — ${t.trialDaysLeft} days left`, 'ok');
+      loadAndRenderPlan();
+      return { ok: true };
+    }
+    if (t?.canUsePro) return { ok: true };
+  }
+  return {
+    ok: false,
+    message: 'Start your 7-day premium trial in Settings, or activate a license key.',
+  };
 }
 
 function loadAndRenderPlan() {
@@ -318,6 +347,18 @@ document.getElementById('lic-activateBtn')?.addEventListener('click', async () =
     result.textContent = `❌ ${res?.error || 'Invalid key'}`;
     result.style.color = '#f85149';
     result.style.display = 'block';
+  }
+});
+
+document.getElementById('lic-startTrialBtn')?.addEventListener('click', async () => {
+  const t = await chrome.runtime.sendMessage({ type: 'START_TRIAL' });
+  if (t?.started) {
+    showToast(`7-day premium trial started — ${t.trialDaysLeft} days left`, 'ok');
+    loadAndRenderPlan();
+  } else if (t?.canUsePro) {
+    showToast(t?.plan === 'trial' ? 'Trial already active — enjoy premium access' : 'Pro already active', 'ok');
+  } else {
+    showToast(t?.trialUsed ? 'Trial already used — activate a license key below' : 'Could not start trial', 'err');
   }
 });
 
@@ -1227,24 +1268,38 @@ function readFileAsDataURL(file) {
   });
 }
 
-/** Put data: URLs in chrome.storage.local so runtime messages stay small (fixes truncated / empty media on send). Unique key avoids schedule vs live campaign clobbering. */
+/** Put data: URLs in chrome.storage.local so runtime messages stay small (fixes truncated / empty media on send). Unique key avoids schedule vs live campaign clobbering.
+ *  Large files are split into 3 MB chunks to stay under chrome.storage per-item limits. */
+const _STAGE_CHUNK = 3 * 1024 * 1024; // 3 MB — safely under the 8 MB per-item limit
 async function stageImageForBackgroundMessage(imageUrl, imageMime, imageName) {
   if (!imageUrl || !String(imageUrl).startsWith('data:')) {
+    console.log('[WA-DBG] stageImage: no data URL (len=', (imageUrl||'').length, '), skipping staging');
     return { imageUrl, imageMime, imageName, imageStagingKey: null };
   }
   const key = `waBulkStagedMedia_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+  const mime = imageMime || 'image/jpeg';
+  const name = imageName || 'image.jpg';
+  console.log('[WA-DBG] stageImage: dataUrlLen=', imageUrl.length, 'mime=', mime, 'key=', key);
   try {
-    await chrome.storage.local.set({
-      [key]: {
-        imageData: imageUrl,
-        imageMime: imageMime || 'image/jpeg',
-        imageName: imageName || 'image.jpg'
+    if (imageUrl.length <= _STAGE_CHUNK) {
+      // Small enough for a single storage item
+      await chrome.storage.local.set({ [key]: { imageData: imageUrl, imageMime: mime, imageName: name } });
+      console.log('[WA-DBG] stageImage: stored as single item');
+    } else {
+      // Large file — split into chunks so each item stays under the per-item quota
+      const numChunks = Math.ceil(imageUrl.length / _STAGE_CHUNK);
+      const toSet = { [key]: { chunked: true, chunks: numChunks, imageMime: mime, imageName: name } };
+      for (let i = 0; i < numChunks; i++) {
+        toSet[`${key}_c${i}`] = imageUrl.slice(i * _STAGE_CHUNK, (i + 1) * _STAGE_CHUNK);
       }
-    });
-    return { imageUrl: null, imageMime, imageName, imageStagingKey: key };
+      await chrome.storage.local.set(toSet);
+      console.log('[WA-DBG] stageImage: stored as', numChunks, 'chunks');
+    }
+    console.log('[WA-DBG] stageImage: success, stagingKey=', key);
+    return { imageUrl: null, imageMime: mime, imageName: name, imageStagingKey: key };
   } catch (e) {
-    console.warn('[WA] Media staging failed, sending inline:', e);
-    return { imageUrl, imageMime, imageName, imageStagingKey: null };
+    console.warn('[WA-DBG] stageImage: FAILED:', e.message, '— falling back to inline send');
+    return { imageUrl, imageMime: mime, imageName: name, imageStagingKey: null };
   }
 }
 
