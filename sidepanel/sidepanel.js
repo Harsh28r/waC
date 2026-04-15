@@ -11,7 +11,7 @@ let isRunning   = false;
 let privacyOn   = false;
 let pinnedChats = [];   // max 6 virtual pinned chats
 const PIN_MAX   = 6;
-let settings    = { apiKey: '', geminiApiKey: '', openaiApiKey: '', aiProvider: 'gemini', aiEnabled: false, minDelay: 15, maxDelay: 45, dailyLimit: 100, stealthMode: false, autoPrivacy: false };
+let settings    = { apiKey: '', geminiApiKey: '', openaiApiKey: '', aiProvider: 'gemini', aiEnabled: false, minDelay: 20, maxDelay: 45, dailyLimit: 100, stealthMode: false, autoPrivacy: false, batchSize: 20, batchPause: 300 };
 
 // ─── Suppress "message channel closed" runtime.lastError warnings ─────────────
 // MV3: only wrap when a real callback is passed. If we inject a dummy callback when
@@ -1891,10 +1891,13 @@ function applySettings() {
   document.getElementById('apiKey').value        = settings.apiKey      || '';
   document.getElementById('openaiApiKey').value  = settings.groqApiKey || '';
   document.getElementById('aiEnabled').checked   = settings.aiEnabled   || false;
-  const delay = settings.minDelay || 15;
-  document.getElementById('minDelay').value = delay;
+  document.getElementById('minDelay').value = settings.minDelay || 20;
   const maxEl = document.getElementById('maxDelay');
-  if (maxEl) maxEl.value = delay;
+  if (maxEl) maxEl.value = settings.maxDelay || 45;
+  const bsEl = document.getElementById('batchSize');
+  if (bsEl) bsEl.value = settings.batchSize || 20;
+  const bpEl = document.getElementById('batchPause');
+  if (bpEl) bpEl.value = settings.batchPause || 300;
   document.getElementById('dailyLimit').value    = settings.dailyLimit  || 100;
   document.getElementById('stealthMode').checked = settings.stealthMode || false;
   document.getElementById('autoPrivacy').checked = settings.autoPrivacy || false;
@@ -1991,8 +1994,10 @@ document.getElementById('saveSettingsBtn').addEventListener('click', () => {
   settings.apiKey       = document.getElementById('apiKey').value.trim();
   settings.groqApiKey   = document.getElementById('openaiApiKey').value.trim();
   settings.aiEnabled    = document.getElementById('aiEnabled').checked;
-  const delaySec = parseInt(document.getElementById('minDelay')?.value) || 15;
-  settings.minDelay = settings.maxDelay = delaySec;
+  settings.minDelay   = Math.max(5, parseInt(document.getElementById('minDelay')?.value)  || 20);
+  settings.maxDelay   = Math.max(settings.minDelay, parseInt(document.getElementById('maxDelay')?.value) || 45);
+  settings.batchSize  = Math.max(5, parseInt(document.getElementById('batchSize')?.value)  || 20);
+  settings.batchPause = Math.max(30, parseInt(document.getElementById('batchPause')?.value) || 300);
   settings.dailyLimit  = parseInt(document.getElementById('dailyLimit').value)|| 100;
   settings.stealthMode = document.getElementById('stealthMode').checked;
   settings.autoPrivacy = document.getElementById('autoPrivacy').checked;
@@ -2035,6 +2040,10 @@ document.getElementById('exportBtn').addEventListener('click', () => {
 // ─── Estimate refresh on delay change ────────────────────────────────────────
 document.getElementById('minDelay')?.addEventListener('input', refreshEstimate);
 document.getElementById('minDelay')?.addEventListener('change', refreshEstimate);
+document.getElementById('maxDelay')?.addEventListener('input', refreshEstimate);
+document.getElementById('maxDelay')?.addEventListener('change', refreshEstimate);
+document.getElementById('batchSize')?.addEventListener('input', refreshEstimate);
+document.getElementById('batchPause')?.addEventListener('input', refreshEstimate);
 
 // ─── Campaign Controls ────────────────────────────────────────────────────────
 document.getElementById('startBtn').addEventListener('click', startCampaign);
@@ -2111,7 +2120,8 @@ async function startCampaign() {
   const campaignAiKey = (settings.aiProvider === 'gemini' ? settings.geminiApiKey : settings.apiKey) || '';
   if (settings.aiEnabled && !campaignAiKey) return showError('Add API key in Settings (Gemini free or Claude)');
 
-  const delaySec = parseInt(document.getElementById('minDelay')?.value) || 15;
+  const delaySec    = Math.max(5, parseInt(document.getElementById('minDelay')?.value)  || 20);
+  const delaySecMax = Math.max(delaySec, parseInt(document.getElementById('maxDelay')?.value) || 45);
   if (delaySec < 5) return showError('Delay must be at least 5 seconds');
 
   contacts = contacts.map(c => ({ ...c, status: 'pending' }));
@@ -2138,7 +2148,7 @@ async function startCampaign() {
       imageStagingKey: runStaged.imageStagingKey,
       imageMime: runStaged.imageMime,
       imageName: runStaged.imageName,
-      settings: { ...settings, minDelay: delaySec, maxDelay: delaySec, campaignName }
+      settings: { ...settings, minDelay: delaySec, maxDelay: delaySecMax, batchSize: settings.batchSize || 20, batchPause: settings.batchPause || 300, campaignName }
     }
   }, resp => {
     if (chrome.runtime.lastError) { showError('Start failed: ' + chrome.runtime.lastError.message); setRunningUI(false); isRunning = false; return; }
@@ -2178,6 +2188,18 @@ chrome.storage.onChanged.addListener(changes => {
   }
 });
 
+// Re-sync progress + results when window is restored after being minimized.
+// Chrome can throttle/batch storage events while the window is minimized,
+// so force a fresh read when the page becomes visible again.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    chrome.storage.local.get(['campaignProgress', 'results'], (d) => {
+      if (d.results) { results = d.results; renderLastResults(); }
+      if (d.campaignProgress) handleProgress(d.campaignProgress);
+    });
+  }
+});
+
 // ─── Campaign Time Estimate (shown before start) ─────────────────────────────
 function refreshEstimate() {
   const estEl    = document.getElementById('campaignEstimate');
@@ -2185,13 +2207,20 @@ function refreshEstimate() {
   const detailEl = document.getElementById('estimateDetail');
   if (!estEl || !textEl) return;
 
-  const n       = contacts.length;
-  const delaySec = parseInt(document.getElementById('minDelay')?.value) || 20;
+  const n           = contacts.length;
+  const minD        = Math.max(5, parseInt(document.getElementById('minDelay')?.value)  || 20);
+  const maxD        = Math.max(minD, parseInt(document.getElementById('maxDelay')?.value) || 45);
+  const avgDelay    = Math.round((minD + maxD) / 2);
+  const batchSize   = Math.max(5, parseInt(document.getElementById('batchSize')?.value)  || 20);
+  const batchPause  = Math.max(30, parseInt(document.getElementById('batchPause')?.value) || 300);
+  const numBatches  = Math.ceil(n / batchSize);
 
   if (n < 1) { estEl.style.display = 'none'; return; }
 
-  // Total = n contacts × delaySec each (last contact has no delay after it)
-  const totalSec = Math.max(0, (n - 1)) * delaySec + n * 5; // ~5s per send + delay between
+  // Total = msgs × avgDelay + batch breaks between batches
+  const sendSec   = Math.max(0, n - 1) * avgDelay + n * 5; // ~5s per send + avg delay
+  const breakSec  = Math.max(0, numBatches - 1) * batchPause;
+  const totalSec  = sendSec + breakSec;
   const h  = Math.floor(totalSec / 3600);
   const m  = Math.floor((totalSec % 3600) / 60);
   const s  = totalSec % 60;
@@ -2203,8 +2232,9 @@ function refreshEstimate() {
   else if (m > 0)           timeStr = `~${m} min`;
   else                      timeStr = `~${s} sec`;
 
+  const batchInfo = numBatches > 1 ? ` + ${numBatches - 1} break${numBatches > 2 ? 's' : ''}` : '';
   textEl.textContent   = timeStr;
-  detailEl.textContent = `${n} contacts × ${delaySec}s delay`;
+  detailEl.textContent = `${n} contacts × ${minD}–${maxD}s delay${batchInfo}`;
   estEl.style.display  = 'flex';
 }
 
@@ -2243,6 +2273,11 @@ function handleProgress(data) {
   if (!data) return;
   const pct = data.total ? Math.round(((data.currentIndex + 1) / data.total) * 100) : 0;
   const varBadge = document.getElementById('variantBadge');
+
+  // Real-time sent count: use background-supplied sentCount if present, otherwise count from results
+  const sentCount = data.sentCount !== undefined
+    ? data.sentCount
+    : results.filter(r => r.status === 'sent').length;
 
   // Sync start time from background if available
   if (data.campaignStartTime && !_campaignStart) {
@@ -2284,15 +2319,21 @@ function handleProgress(data) {
 
     case 'personalizing':
       setStatus('Personalizing', 'running');
-      setProgress(`🤖 AI personalizing for ${data.contact}...`, pct, data.currentIndex+1, data.total);
+      setProgress(`🤖 AI personalizing for ${data.contact}...`, pct, sentCount, data.total);
       if (data.variant) { varBadge.style.display='inline'; varBadge.textContent='Variant '+data.variant; }
       updateContactStatus(data.phone, data.contact, 'personalizing');
       break;
 
     case 'sending':
       setStatus('Sending', 'running');
-      setProgress(`📤 Sending to ${data.contact}...`, pct, data.currentIndex+1, data.total);
+      setProgress(`📤 Sending to ${data.contact}...`, pct, sentCount, data.total);
       updateContactStatus(data.phone, data.contact, 'sending');
+      break;
+
+    case 'skipped':
+      // DNC contact — mark as skipped in contact list, update stats, do NOT count as sent
+      updateContactStatus(data.phone, data.contact, 'skipped');
+      if (data.results) { results = data.results; renderLastResults(); chrome.storage.local.set({ results }); }
       break;
 
     case 'sent':
@@ -2302,7 +2343,7 @@ function handleProgress(data) {
       if ((data.status === 'failed' || data.status === 'invalid') && data.results?.length) {
         const last = data.results[data.results.length - 1];
         const icon = data.status === 'invalid' ? '⚠️' : '❌';
-        if (last?.error) setProgress(`${icon} ${data.contact}: ${last.error}`, pct, data.currentIndex+1, data.total);
+        if (last?.error) setProgress(`${icon} ${data.contact}: ${last.error}`, pct, sentCount, data.total);
       }
       if (data.status === 'sent' && data.phone) {
         const ci = contacts.findIndex(c => c.phone === data.phone);
@@ -2319,8 +2360,19 @@ function handleProgress(data) {
 
     case 'waiting':
       setStatus('Waiting', 'waiting');
-      setProgress(`⏳ Next in ${data.nextIn}s...`, pct, data.currentIndex+1, data.total);
+      // Show actual sent count / total — not processed count, so minimized window shows accurate numbers
+      setProgress(`⏳ Next in ${data.nextIn}s...`, pct, sentCount, data.total);
       break;
+
+    case 'batch_pause': {
+      setStatus('Batch Break', 'waiting');
+      const bpMin = Math.floor(data.nextIn / 60);
+      const bpSec = data.nextIn % 60;
+      const bpStr = bpMin > 0 ? `${bpMin}m ${bpSec}s` : `${bpSec}s`;
+      setProgress(`🛡️ Anti-block break — resuming in ${bpStr}...`, pct, sentCount, data.total);
+      if (data.results) { results = data.results; renderLastResults(); chrome.storage.local.set({ results }); }
+      break;
+    }
 
     case 'error':
       isRunning = false; setRunningUI(false);
@@ -2359,13 +2411,21 @@ function showCampaignReport(data) {
   const sent    = r.filter(x => x.status === 'sent').length;
   const invalid = r.filter(x => x.status === 'invalid').length;
   const failed  = r.filter(x => x.status === 'failed').length;
+  const notSent = r.filter(x => x.status === 'not_sent').length;
   const total   = r.length;
-  const rate    = total ? Math.round((sent / total) * 100) : 0;
+  // Success rate counts only against processed (non not_sent) contacts
+  const processed = total - notSent;
+  const rate    = processed ? Math.round((sent / processed) * 100) : 0;
 
   const durMs   = data.campaignDurationMs || (data.campaignStartTime ? Date.now() - data.campaignStartTime : 0);
   const durStr  = durMs > 0 ? formatDurationMs(durMs) : '—';
 
   const campaignName = document.getElementById('campaignName')?.value?.trim() || '';
+
+  // Update title/icon if stopped early
+  const wasStopped = notSent > 0;
+  document.getElementById('reportCheckmark').textContent = wasStopped ? '⏸' : '✓';
+  document.getElementById('reportTitle').textContent     = wasStopped ? 'Campaign Stopped' : 'Campaign Complete';
 
   // Fill report
   document.getElementById('reportCampaignName').textContent = campaignName || '';
@@ -2373,13 +2433,17 @@ function showCampaignReport(data) {
   document.getElementById('rstat-sent').textContent    = sent;
   document.getElementById('rstat-invalid').textContent = invalid;
   document.getElementById('rstat-failed').textContent  = failed;
+  document.getElementById('rstat-notsent').textContent = notSent;
   document.getElementById('rstat-total').textContent   = total;
+  // Hide "Not Sent" stat box when not applicable
+  document.getElementById('rstat-notsent').closest('.rstat').style.display = notSent > 0 ? '' : 'none';
   document.getElementById('reportRateFill').style.width = rate + '%';
-  document.getElementById('reportRateLabel').textContent = `${rate}% success rate`;
+  document.getElementById('reportRateLabel').textContent = `${rate}% success rate (of ${processed} processed)`;
 
   // Invalid list
   const invalidItems = r.filter(x => x.status === 'invalid');
   const failedItems  = r.filter(x => x.status === 'failed');
+  const notSentItems = r.filter(x => x.status === 'not_sent');
 
   const invList = document.getElementById('reportInvalidList');
   const invItems = document.getElementById('reportInvalidItems');
@@ -2397,6 +2461,15 @@ function showCampaignReport(data) {
     failList.style.display = 'block';
   } else {
     failList.style.display = 'none';
+  }
+
+  const notSentList  = document.getElementById('reportNotSentList');
+  const notSentItemsEl = document.getElementById('reportNotSentItems');
+  if (notSentItems.length) {
+    notSentItemsEl.textContent = notSentItems.map(x => `${x.contact || x.phone} (${x.phone})`).join('\n');
+    notSentList.style.display = 'block';
+  } else {
+    notSentList.style.display = 'none';
   }
 
   document.getElementById('campaignReport').style.display = 'flex';

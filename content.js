@@ -204,6 +204,38 @@ function pickGalleryFileInput(inputs) {
   return nonSticker[0] || inputs[0] || null;
 }
 
+// ─── Dismiss WA Invalid-Number / Error Popup (OK dialog) ─────────────────────
+// WA Web shows a modal when navigating to an invalid number via URL.
+// This must be dismissed before any compose/send logic can proceed.
+function dismissInvalidDialog() {
+  const selectors = [
+    '[data-testid="popup-contents"]',
+    '[data-animate-modal-popup]',
+    '[role="dialog"]',
+    '[data-testid="confirm-popup"]',
+    '[data-testid="alert-dialog"]'
+  ];
+  for (const sel of selectors) {
+    const dialog = document.querySelector(sel);
+    if (!dialog) continue;
+    const t = (dialog.textContent || '').toLowerCase();
+    if (t.includes('invalid') || t.includes('not registered') || t.includes('not on whatsapp') || t.includes('phone number') || t.includes('error')) {
+      // Try to find and click the OK / Close / Dismiss button
+      const btn =
+        dialog.querySelector('button[data-testid="popup-contents-ok-btn"]') ||
+        dialog.querySelector('button[data-testid="confirm-popup-ok"]') ||
+        Array.from(dialog.querySelectorAll('button')).find(b => /ok|close|dismiss|got it/i.test(b.textContent)) ||
+        dialog.querySelector('button');
+      if (btn) {
+        btn.click();
+        console.log('[WA-EXT] Dismissed invalid-number dialog:', t.slice(0, 80));
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 // ─── Click Send ───────────────────────────────────────────────────────────────
 async function clickSend() {
   if (findEl(SEL.qrCode)) return { success: false, error: 'WA Web not logged in — scan QR first' };
@@ -310,6 +342,10 @@ async function openChatByPhone(phone) {
     return btns.find(b => (b.innerText || b.textContent || '').replace(/\D/g, '').includes(tail))
       || null;
   }
+
+  // ── Dismiss any leftover invalid-number popup from the previous contact ──
+  dismissInvalidDialog();
+  await sleep(150);
 
   // ── Reset WA state (close any open panels/modals) ────────────────────────
   // Only one ESC — multiple ESCs or ESC too close to newChatBtn.click() prevents panel opening
@@ -570,6 +606,9 @@ function waPageMain(method, args) {
 async function sendImageWithCaption(imageData, imageMime, imageName, caption) {
   _mediaLog('sendImageWithCaption start, dataLen:', (imageData || '').length);
   if (findEl(SEL.qrCode)) return { success: false, error: 'WA Web not logged in — scan QR first' };
+
+  // Dismiss any invalid-number popup that would block the chat from opening
+  if (dismissInvalidDialog()) await sleep(400);
 
   const header = await waitForEl(['#main header', '#main [data-testid="conversation-header"]'], 12000);
   if (!header) { const e = 'Chat did not open'; console.error('[WA-MEDIA] FAIL:', e); _storeMediaError(e); return { success: false, error: e }; }
@@ -1219,6 +1258,10 @@ async function checkAndReply() {
 
 async function typeAndSend(text, reqId) {
   if (_alreadySentReq(reqId)) return true;
+
+  // Dismiss any invalid-number popup that would block the compose area
+  if (dismissInvalidDialog()) await sleep(400);
+
   // Scope strictly to the chat compose area — NOT the search bar
   const input =
     document.querySelector('#main footer [data-lexical-editor="true"]') ||
@@ -1630,15 +1673,17 @@ async function transcribeWithWebSpeech(msgContainer, btn) {
 // ─── Meeting Scheduler ────────────────────────────────────────────────────────
 const MEETING_BTN_ID   = 'wa-meeting-btn';
 const MEETING_MODAL_ID = 'wa-meeting-modal';
+const REMINDER_MODAL_ID = 'wa-reminder-modal';
+const NOTIFICATION_MODAL_ID = 'wa-notification-center-modal';
 let meetingBtnObserver = null;
 
 function injectMeetingStyles() {
   const existing = document.getElementById('wa-meeting-styles');
-  if (existing && existing.dataset.v === '9') return;
+  if (existing && existing.dataset.v === '14') return;
   if (existing) existing.remove();
   const style = document.createElement('style');
   style.id = 'wa-meeting-styles';
-  style.dataset.v = '9';
+  style.dataset.v = '14';
   style.textContent = `
     #wa-meeting-bar {
       display: flex !important;
@@ -1659,8 +1704,8 @@ function injectMeetingStyles() {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      width: 26px;
-      height: 26px;
+      width: 34px;
+      height: 34px;
       border-radius: 50%;
       border: none;
       background: transparent;
@@ -1676,6 +1721,17 @@ function injectMeetingStyles() {
       transform: scale(1.1);
     }
     .wa-icon-btn:active { transform: scale(0.95); }
+    .wa-icon-btn .wa-btn-icon-image {
+      width: 20px;
+      height: 20px;
+      object-fit: contain;
+      display: block;
+    }
+    .wa-icon-btn svg {
+      width: 18px;
+      height: 18px;
+      flex-shrink: 0;
+    }
     .wa-icon-btn-primary {
       background: transparent;
       color: #00a884;
@@ -1709,7 +1765,7 @@ function injectMeetingStyles() {
     /* Divider between bar button groups */
     .wa-bar-divider {
       width: 1px;
-      height: 18px;
+      height: 22px;
       background: #3b4a54;
       flex-shrink: 0;
       opacity: 0.5;
@@ -1795,6 +1851,104 @@ function injectMeetingStyles() {
     }
     #wa-meeting-modal .wm-btn-cancel:hover { background: #2a3942; }
     #wa-meeting-modal .wm-status {
+      font-size: 12px;
+      margin-top: 9px;
+      text-align: center;
+      min-height: 16px;
+    }
+    #wa-reminder-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 100000;
+      background: rgba(11,20,26,0.65);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #wa-reminder-modal .wr-box {
+      background: #202c33;
+      border-radius: 14px;
+      padding: 22px 24px 18px;
+      width: 340px;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.6);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+    #wa-reminder-modal .wr-title {
+      color: #e9edef;
+      font-size: 15px;
+      font-weight: 700;
+      margin-bottom: 14px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    #wa-reminder-modal .wr-title-icon-wrap {
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      background: #3d4a54;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    #wa-reminder-modal .wr-title-icon {
+      width: 18px;
+      height: 18px;
+      object-fit: contain;
+    }
+    #wa-reminder-modal .wr-label {
+      color: #8696a0;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      margin-bottom: 5px;
+    }
+    #wa-reminder-modal .wr-input {
+      width: 100%;
+      background: #2a3942;
+      border: 1px solid #3b4a54;
+      border-radius: 8px;
+      color: #e9edef;
+      padding: 9px 12px;
+      font-size: 13px;
+      margin-bottom: 13px;
+      box-sizing: border-box;
+      font-family: inherit;
+      outline: none;
+    }
+    #wa-reminder-modal .wr-input:focus { border-color: #00a884; }
+    #wa-reminder-modal .wr-input::placeholder { color: #4a5a65; }
+    #wa-reminder-modal .wr-btns { display: flex; gap: 10px; margin-top: 4px; }
+    #wa-reminder-modal .wr-btn-save {
+      flex: 1;
+      background: #00a884;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 10px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    #wa-reminder-modal .wr-btn-save:hover:not(:disabled) { background: #02c09a; }
+    #wa-reminder-modal .wr-btn-save:disabled { opacity: .6; cursor: default; }
+    #wa-reminder-modal .wr-btn-cancel {
+      flex: 1;
+      background: transparent;
+      color: #8696a0;
+      border: 1px solid #3b4a54;
+      border-radius: 8px;
+      padding: 10px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    #wa-reminder-modal .wr-btn-cancel:hover { background: #2a3942; }
+    #wa-reminder-modal .wr-status {
       font-size: 12px;
       margin-top: 9px;
       text-align: center;
@@ -2167,31 +2321,222 @@ function injectMeetingStyles() {
     /* ── Privacy Eye button active state ── */
     #wa-privacy-btn.active { background: #2a3942 !important; color: #00a884 !important; }
 
-    /* ── Schedule Meeting Floating Button ── */
-    #wa-meet-fab {
+    /* ── Chat action toolbar: reminder (top) + meeting (bottom), stack for more icons ── */
+    #wa-ext-chat-toolbar {
       position: fixed;
       display: none;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 8px;
+      z-index: 9990;
+      pointer-events: none;
+    }
+    #wa-ext-chat-toolbar.wext-on { display: flex; pointer-events: auto; }
+    #wa-ext-chat-toolbar .wa-ext-action-btn {
+      display: flex;
       align-items: center;
       justify-content: center;
-      background: #005c4b;
-      color: #00a884;
-      border: 2px solid #00a884;
-      border-radius: 50px;
-      padding: 10px 18px;
+      max-width: 52px;
+      min-width: 52px;
+      height: 52px;
+      padding: 0;
+      gap: 0;
+      background: #3d4a54;
+      color: #e9edef;
+      border: none;
+      border-radius: 50%;
       cursor: pointer;
-      z-index: 9990;
-      box-shadow: 0 4px 20px rgba(0,168,132,0.28);
-      transition: background 0.15s, transform 0.1s, box-shadow 0.15s;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.35);
+      overflow: hidden;
+      transition: background 0.15s, transform 0.1s, box-shadow 0.15s,
+        max-width 0.22s ease, border-radius 0.22s ease, gap 0.22s ease, padding 0.22s ease, justify-content 0.22s ease;
     }
-    #wa-meet-fab svg { width: 22px; height: 22px; }
-    #wa-meet-fab span { display: none; }
-    #wa-meet-fab.wfab-on { display: flex; }
-    #wa-meet-fab:hover {
-      background: #006e5c;
-      box-shadow: 0 6px 24px rgba(0,168,132,0.4);
-      transform: translateY(-1px);
+    #wa-ext-chat-toolbar .wa-ext-action-btn img {
+      width: 28px;
+      height: 28px;
+      object-fit: contain;
+      flex-shrink: 0;
     }
-    #wa-meet-fab:active { transform: scale(0.97); }
+    #wa-ext-chat-toolbar .wa-ext-action-btn span {
+      display: block;
+      max-width: 0;
+      opacity: 0;
+      overflow: hidden;
+      white-space: nowrap;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      transition: max-width 0.22s ease, opacity 0.18s ease;
+    }
+    #wa-ext-chat-toolbar .wa-ext-action-btn:hover {
+      justify-content: flex-start;
+      max-width: 220px;
+      padding: 0 14px 0 11px;
+      gap: 9px;
+      border-radius: 26px;
+      background: #4a5568;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.45);
+    }
+    #wa-ext-chat-toolbar .wa-ext-action-btn:hover span {
+      max-width: 160px;
+      opacity: 1;
+    }
+    #wa-ext-chat-toolbar .wa-ext-action-btn:active { transform: scale(0.96); }
+    #wa-reminder-alert-layer {
+      position: fixed;
+      z-index: 10002;
+      box-sizing: border-box;
+      pointer-events: auto;
+    }
+    #wa-reminder-alert-layer .wa-reminder-alert {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      background: #202c33;
+      border: 1px solid #00a884;
+      border-radius: 10px;
+      padding: 10px 10px 10px 12px;
+      box-shadow: 0 8px 28px rgba(0,0,0,0.45);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+    #wa-reminder-alert-layer .wa-reminder-alert-icon {
+      width: 28px;
+      height: 28px;
+      object-fit: contain;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+    #wa-reminder-alert-layer .wa-reminder-alert-body { flex: 1; min-width: 0; }
+    #wa-reminder-alert-layer .wa-reminder-alert-title {
+      color: #e9edef;
+      font-size: 14px;
+      font-weight: 700;
+      line-height: 1.3;
+    }
+    #wa-reminder-alert-layer .wa-reminder-alert-meta {
+      color: #8696a0;
+      font-size: 12px;
+      margin-top: 4px;
+    }
+    #wa-reminder-alert-layer .wa-reminder-alert-note {
+      color: #aebac1;
+      font-size: 12px;
+      margin-top: 6px;
+      line-height: 1.35;
+    }
+    #wa-reminder-alert-layer .wa-reminder-alert-dismiss {
+      flex-shrink: 0;
+      width: 28px;
+      height: 28px;
+      border: none;
+      border-radius: 8px;
+      background: transparent;
+      color: #8696a0;
+      font-size: 20px;
+      line-height: 1;
+      cursor: pointer;
+      padding: 0;
+    }
+    #wa-reminder-alert-layer .wa-reminder-alert-dismiss:hover {
+      background: #2a3942;
+      color: #e9edef;
+    }
+    #wa-notification-center-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 100000;
+      background: rgba(0,0,0,0.6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #wa-notification-center-modal .wn-box {
+      width: min(520px, calc(100vw - 26px));
+      max-height: min(680px, calc(100vh - 30px));
+      background: #202c33;
+      border-radius: 14px;
+      border: 1px solid #2a3942;
+      box-shadow: 0 16px 46px rgba(0,0,0,.5);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+    #wa-notification-center-modal .wn-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 14px;
+      border-bottom: 1px solid #2a3942;
+      background: #1f2b33;
+    }
+    #wa-notification-center-modal .wn-title {
+      color: #e9edef;
+      font-size: 15px;
+      font-weight: 700;
+      margin: 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    #wa-notification-center-modal .wn-title img {
+      width: 20px;
+      height: 20px;
+      object-fit: contain;
+    }
+    #wa-notification-center-modal .wn-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    #wa-notification-center-modal .wn-btn {
+      border: 1px solid #3b4a54;
+      background: #2a3942;
+      color: #c9d1d9;
+      border-radius: 8px;
+      padding: 7px 12px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    #wa-notification-center-modal .wn-btn:hover { background: #33424c; }
+    #wa-notification-center-modal .wn-list {
+      padding: 10px 10px 12px;
+      overflow: auto;
+      min-height: 120px;
+    }
+    #wa-notification-center-modal .wn-empty {
+      color: #8696a0;
+      font-size: 13px;
+      padding: 22px 8px;
+      text-align: center;
+    }
+    #wa-notification-center-modal .wn-item {
+      border: 1px solid #2a3942;
+      border-radius: 10px;
+      padding: 9px 10px;
+      margin-bottom: 8px;
+      background: #1f2c34;
+    }
+    #wa-notification-center-modal .wn-item-title {
+      color: #e9edef;
+      font-size: 13px;
+      font-weight: 600;
+      line-height: 1.35;
+    }
+    #wa-notification-center-modal .wn-item-msg {
+      color: #9fb0ba;
+      font-size: 12px;
+      margin-top: 3px;
+      line-height: 1.35;
+    }
+    #wa-notification-center-modal .wn-item-meta {
+      color: #7e8f99;
+      font-size: 11px;
+      margin-top: 6px;
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+    }
   `;
   document.head.appendChild(style);
 }
@@ -2217,6 +2562,189 @@ function generateJitsiLink(title, contact) {
                 clean(contact).substring(0, 10) +
                 Math.random().toString(36).substring(2, 7).toUpperCase();
   return 'https://meet.jit.si/' + room;
+}
+
+function openReminderModal() {
+  if (document.getElementById(REMINDER_MODAL_ID)) return;
+  const contactName = getContactName();
+  const now = new Date();
+  now.setMinutes(now.getMinutes() + 30, 0, 0);
+  const defaultTitle = 'Follow up with ' + contactName;
+  const dtLocal = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+
+  const modal = document.createElement('div');
+  modal.id = REMINDER_MODAL_ID;
+  modal.innerHTML = `
+    <div class="wr-box">
+      <div class="wr-title"><span class="wr-title-icon-wrap"><img src="${chrome.runtime.getURL('assets/chat-reminder-icon.png')}" alt="" class="wr-title-icon"></span>Set Reminder — ${contactName}</div>
+      <div class="wr-label">Reminder Title</div>
+      <input class="wr-input" id="wr-title" value="${defaultTitle}" placeholder="e.g. Follow up on proposal">
+      <div class="wr-label">Remind At</div>
+      <input type="datetime-local" class="wr-input" id="wr-datetime" value="${dtLocal}">
+      <div class="wr-label">Note (optional)</div>
+      <input class="wr-input" id="wr-note" placeholder="Short note to include">
+      <div class="wr-btns">
+        <button class="wr-btn-cancel" id="wr-cancel">Cancel</button>
+        <button class="wr-btn-save" id="wr-save">Save Reminder</button>
+      </div>
+      <div class="wr-status" id="wr-status"></div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  modal.addEventListener('click', e => { if (e.target === modal) closeReminderModal(); });
+  document.getElementById('wr-cancel').addEventListener('click', closeReminderModal);
+  document.getElementById('wr-save').addEventListener('click', async () => {
+    const title = document.getElementById('wr-title').value.trim();
+    const dtVal = document.getElementById('wr-datetime').value;
+    const note = document.getElementById('wr-note').value.trim();
+    const statusEl = document.getElementById('wr-status');
+    const saveBtn = document.getElementById('wr-save');
+
+    if (!title || !dtVal) {
+      statusEl.style.color = '#f85149';
+      statusEl.textContent = 'Please add title and date/time.';
+      return;
+    }
+    const remindAt = new Date(dtVal).getTime();
+    if (!Number.isFinite(remindAt) || remindAt <= Date.now()) {
+      statusEl.style.color = '#f85149';
+      statusEl.textContent = 'Reminder time must be in the future.';
+      return;
+    }
+
+    saveBtn.disabled = true;
+    statusEl.style.color = '#8696a0';
+    statusEl.textContent = 'Saving...';
+    try {
+      const res = await chrome.runtime.sendMessage({
+        type: 'SAVE_CHAT_REMINDER',
+        data: { contactName, title, remindAt, note }
+      });
+      if (res?.success) {
+        statusEl.style.color = '#00a884';
+        statusEl.textContent = 'Reminder saved.';
+        setTimeout(closeReminderModal, 700);
+      } else {
+        statusEl.style.color = '#f85149';
+        statusEl.textContent = res?.error || 'Failed to save reminder.';
+        saveBtn.disabled = false;
+      }
+    } catch (e) {
+      statusEl.style.color = '#f85149';
+      statusEl.textContent = e.message || 'Failed to save reminder.';
+      saveBtn.disabled = false;
+    }
+  });
+
+  document.getElementById('wr-title').focus();
+}
+
+function closeReminderModal() {
+  const el = document.getElementById(REMINDER_MODAL_ID);
+  if (el) el.remove();
+}
+
+function repositionReminderAlertIfAny() {
+  const el = document.getElementById('wa-reminder-alert-layer');
+  const main = document.getElementById('main');
+  if (!el || !main) return;
+  const r = main.getBoundingClientRect();
+  el.style.left = (r.left + 12) + 'px';
+  el.style.top = (r.top + 8) + 'px';
+  el.style.width = Math.max(260, r.width - 24) + 'px';
+}
+
+function showChatReminderAlert(payload) {
+  if (!payload || !payload.title) return;
+  const prev = document.getElementById('wa-reminder-alert-layer');
+  if (prev) prev.remove();
+  const iconUrl = chrome.runtime.getURL('assets/chat-reminder-icon.png');
+  const layer = document.createElement('div');
+  layer.id = 'wa-reminder-alert-layer';
+  layer.innerHTML = `
+    <div class="wa-reminder-alert">
+      <img src="${iconUrl}" alt="" class="wa-reminder-alert-icon">
+      <div class="wa-reminder-alert-body">
+        <div class="wa-reminder-alert-title">${escapeHtml(payload.title)}</div>
+        <div class="wa-reminder-alert-meta">${escapeHtml(payload.contactName || '')} · ${escapeHtml(payload.dateStr || '')} ${escapeHtml(payload.timeStr || '')}</div>
+        ${payload.note ? `<div class="wa-reminder-alert-note">${escapeHtml(payload.note)}</div>` : ''}
+      </div>
+      <button type="button" class="wa-reminder-alert-dismiss" title="Dismiss" aria-label="Dismiss">×</button>
+    </div>
+  `;
+  document.body.appendChild(layer);
+  repositionReminderAlertIfAny();
+  const dismiss = () => layer.remove();
+  layer.querySelector('.wa-reminder-alert-dismiss').addEventListener('click', dismiss);
+  setTimeout(dismiss, 60000);
+}
+
+function closeNotificationCenterModal() {
+  const el = document.getElementById(NOTIFICATION_MODAL_ID);
+  if (el) el.remove();
+}
+
+function formatNotificationTime(ts) {
+  const d = new Date(ts || Date.now());
+  return d.toLocaleString('en-IN', {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+}
+
+async function openNotificationCenterModal() {
+  closeNotificationCenterModal();
+  const iconUrl = chrome.runtime.getURL('assets/notification-center-icon.png');
+  const modal = document.createElement('div');
+  modal.id = NOTIFICATION_MODAL_ID;
+  modal.innerHTML = `
+    <div class="wn-box">
+      <div class="wn-head">
+        <h3 class="wn-title"><img src="${iconUrl}" alt="">All Notifications</h3>
+        <div class="wn-actions">
+          <button type="button" class="wn-btn" id="wn-clear-btn">Clear</button>
+          <button type="button" class="wn-btn" id="wn-close-btn">Close</button>
+        </div>
+      </div>
+      <div class="wn-list" id="wn-list"><div class="wn-empty">Loading...</div></div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  const listEl = document.getElementById('wn-list');
+  const render = (items = []) => {
+    if (!items.length) {
+      listEl.innerHTML = '<div class="wn-empty">No notifications yet.</div>';
+      return;
+    }
+    listEl.innerHTML = items.map(n => `
+      <div class="wn-item">
+        <div class="wn-item-title">${escapeHtml(n.title || 'Notification')}</div>
+        ${n.message ? `<div class="wn-item-msg">${escapeHtml(n.message)}</div>` : ''}
+        <div class="wn-item-meta">
+          <span>${escapeHtml((n.type || 'event').toUpperCase())}</span>
+          <span>${escapeHtml(formatNotificationTime(n.ts))}</span>
+        </div>
+      </div>
+    `).join('');
+  };
+
+  try {
+    const res = await chrome.runtime.sendMessage({ type: 'GET_NOTIFICATION_FEED' });
+    render(res?.items || []);
+  } catch (e) {
+    listEl.innerHTML = '<div class="wn-empty">Failed to load notifications.</div>';
+  }
+
+  modal.addEventListener('click', e => { if (e.target === modal) closeNotificationCenterModal(); });
+  document.getElementById('wn-close-btn').addEventListener('click', closeNotificationCenterModal);
+  document.getElementById('wn-clear-btn').addEventListener('click', async () => {
+    try { await chrome.runtime.sendMessage({ type: 'CLEAR_NOTIFICATION_FEED' }); } catch (e) {}
+    render([]);
+  });
 }
 
 function openMeetingModal() {
@@ -2518,44 +3046,62 @@ function togglePrivacyMode() {
   _syncPrivacyBtn(isOn);
 }
 
-// ── Schedule Meeting FAB (floating above quick-reply strip in open chat) ───────
-const SVG_CAL_FAB = `<svg width="22" height="22" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="3" width="13" height="11.5" rx="1.5" stroke="currentColor" stroke-width="1.4"/><path d="M1.5 6.5h13" stroke="currentColor" stroke-width="1.4"/><path d="M5 1.5V4M11 1.5V4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="5.5" cy="9.5" r=".75" fill="currentColor"/><circle cx="8" cy="9.5" r=".75" fill="currentColor"/><circle cx="10.5" cy="9.5" r=".75" fill="currentColor"/><circle cx="5.5" cy="12" r=".75" fill="currentColor"/><circle cx="8" cy="12" r=".75" fill="currentColor"/></svg>`;
+// ── Chat action toolbar (add future chat icons here) ───────
+const MEETING_ICON_URL = chrome.runtime.getURL('assets/schedule-meeting-icon.png');
+const MEETING_ACTION_ICON_HTML = `<img src="${MEETING_ICON_URL}" alt="">`;
+const REMINDER_ICON_URL = chrome.runtime.getURL('assets/chat-reminder-icon.png');
+const REMINDER_ACTION_ICON_HTML = `<img src="${REMINDER_ICON_URL}" alt="">`;
 
-function positionMeetingFAB() {
-  const fab    = document.getElementById('wa-meet-fab');
+function positionChatActionToolbar() {
+  const bar = document.getElementById('wa-ext-chat-toolbar');
   const footer = document.querySelector('#main footer');
-  const main   = document.getElementById('main');
-  if (!fab) return;
-  if (!footer || !main) { fab.classList.remove('wfab-on'); return; }
-
-  const footerRect = footer.getBoundingClientRect();
-  const strip      = document.getElementById('wa-qr-strip');
-  const stripH     = (strip && strip.classList.contains('wqrs-open'))
-                       ? (strip.getBoundingClientRect().height || 0) : 0;
-  const mainRect   = main.getBoundingClientRect();
-
-  // Sit above the footer (+ strip if open), aligned to LEFT edge of #main
-  fab.style.bottom = (window.innerHeight - footerRect.top + stripH + 14) + 'px';
-  fab.style.right  = '';
-  fab.style.left   = (mainRect.left + 18) + 'px';
-  fab.classList.add('wfab-on');
-}
-
-function injectMeetingFAB() {
-  if (!document.getElementById('main')) {
-    // No open chat — hide fab if it exists
-    document.getElementById('wa-meet-fab')?.classList.remove('wfab-on');
+  const main = document.getElementById('main');
+  if (!bar) return;
+  if (!footer || !main) {
+    bar.classList.remove('wext-on');
     return;
   }
-  let fab = document.getElementById('wa-meet-fab');
-  if (!fab) {
-    fab = document.createElement('button');
-    fab.id = 'wa-meet-fab';
-    fab.innerHTML = SVG_CAL_FAB + '<span>Schedule Meeting</span>';
-    fab.addEventListener('click', e => { e.stopPropagation(); openMeetingModal(); });
-    document.body.appendChild(fab);
+  const footerRect = footer.getBoundingClientRect();
+  const strip = document.getElementById('wa-qr-strip');
+  const stripH = (strip && strip.classList.contains('wqrs-open'))
+    ? (strip.getBoundingClientRect().height || 0) : 0;
+  const mainRect = main.getBoundingClientRect();
+  bar.style.bottom = (window.innerHeight - footerRect.top + stripH + 10) + 'px';
+  bar.style.left = (mainRect.left + 12) + 'px';
+  bar.style.right = 'auto';
+  bar.classList.add('wext-on');
+  repositionReminderAlertIfAny();
+}
+
+function injectChatActionToolbar() {
+  if (!document.getElementById('main')) {
+    document.getElementById('wa-ext-chat-toolbar')?.classList.remove('wext-on');
+    return;
   }
-  positionMeetingFAB();
+  let bar = document.getElementById('wa-ext-chat-toolbar');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'wa-ext-chat-toolbar';
+    bar.setAttribute('role', 'toolbar');
+    bar.setAttribute('aria-label', 'WA Bulk AI chat actions');
+
+    const mkBtn = (id, title, iconHtml, label, handler) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.id = id;
+      b.className = 'wa-ext-action-btn';
+      b.title = title;
+      b.innerHTML = iconHtml + '<span>' + label + '</span>';
+      b.addEventListener('click', e => { e.stopPropagation(); handler(); });
+      return b;
+    };
+
+    bar.appendChild(mkBtn('wa-ext-btn-reminder', 'Set reminder', REMINDER_ACTION_ICON_HTML, 'Reminder', openReminderModal));
+    bar.appendChild(mkBtn('wa-ext-btn-meeting', 'Schedule meeting', MEETING_ACTION_ICON_HTML, 'Meeting', openMeetingModal));
+    // Add additional chat-scoped action buttons here.
+    document.body.appendChild(bar);
+  }
+  positionChatActionToolbar();
 }
 
 function ensureMeetingBar() {
@@ -2581,12 +3127,24 @@ function ensureMeetingBar() {
     };
 
     const SVG_BOLT = `<svg width="13" height="13" viewBox="0 0 14 14" fill="currentColor"><path d="M8.5 1L2 8.5h5.5L5.5 13l7-7.5H7L8.5 1z"/></svg>`;
+    const NOTIF_ICON = `<img src="${chrome.runtime.getURL('assets/notification-center-icon.png')}" alt="" class="wa-btn-icon-image">`;
 
     bar.appendChild(mkBtn('wa-qr-btn',      SVG_BOLT,   'Quick Reply Templates', '', toggleQuickReplyStrip));
     bar.appendChild(mkBtn('wa-privacy-btn', SVG_EYE_ON, 'Privacy Mode',          '', togglePrivacyMode));
+    bar.appendChild(mkBtn('wa-notif-btn',   NOTIF_ICON, 'All Notifications',     '', openNotificationCenterModal));
 
     // Append to body first, then positionMeetingBar will move it into the header
     document.body.appendChild(bar);
+  }
+  const bar = document.getElementById('wa-meeting-bar');
+  if (bar && !bar.querySelector('#wa-notif-btn')) {
+    const b = document.createElement('button');
+    b.id = 'wa-notif-btn';
+    b.className = 'wa-icon-btn';
+    b.dataset.tip = 'All Notifications';
+    b.innerHTML = `<img src="${chrome.runtime.getURL('assets/notification-center-icon.png')}" alt="" class="wa-btn-icon-image">`;
+    b.addEventListener('click', e => { e.stopPropagation(); openNotificationCenterModal(); });
+    bar.appendChild(b);
   }
   positionMeetingBar();
 }
@@ -2993,7 +3551,7 @@ const _mainPollInterval = setInterval(() => {
   if (!chrome.runtime?.id) { clearInterval(_mainPollInterval); return; }
   try {
     ensureMeetingBar();
-    injectMeetingFAB();
+    injectChatActionToolbar();
     injectQuickReplyStrip();
     watchReplyPreview();
     injectTranscribeButtons();
@@ -3104,7 +3662,7 @@ function ensureLabelFilterBar() {
     const bar = document.createElement('div');
     bar.id = 'wa-label-bar';
     bar.innerHTML = `
-      <button class="wa-label-chip active" data-filter="all">All</button>
+      <button class="wa-label-chip" data-filter="all">All</button>
       <button class="wa-label-chip" data-filter="unread">Unread</button>
       <button class="wa-label-chip" data-filter="one-to-one">1 to 1</button>
       <button class="wa-label-chip" data-filter="groups">Groups</button>
@@ -3121,18 +3679,20 @@ function ensureLabelFilterBar() {
       document.body.appendChild(bar);
     }
 
+    // Restore active chip to match currentLabelFilter (bar may be re-created after WA re-render)
+    bar.querySelectorAll('.wa-label-chip').forEach(chip => {
+      if (chip.dataset.filter === currentLabelFilter) chip.classList.add('active');
+    });
+
+    function runFilter() {
+      applyLabelFilter(currentLabelFilter);
+    }
+
     bar.querySelectorAll('.wa-label-chip').forEach(chip => {
       chip.addEventListener('click', () => {
         currentLabelFilter = chip.dataset.filter;
         bar.querySelectorAll('.wa-label-chip').forEach(c => c.classList.remove('active'));
         chip.classList.add('active');
-        function runFilter() {
-          if (currentLabelFilter === 'all') {
-            getVisibleChatRows().forEach(r => r.style.removeProperty('display'));
-          } else {
-            applyLabelFilter(currentLabelFilter);
-          }
-        }
         runFilter();
         setTimeout(runFilter, 150);
         setTimeout(runFilter, 500);
@@ -3149,16 +3709,17 @@ function positionLabelBar() {
 
 // Chat list: find rows using the current WA Web grid structure
 function getVisibleChatRows() {
-  // Current WA Web uses role="grid" with aria-label="Chat list"
-  const grid = document.querySelector('[role="grid"][aria-label="Chat list"]');
-  if (grid) {
-    const rows = Array.from(grid.querySelectorAll('[role="row"]')).filter(r => r.offsetHeight > 0);
-    if (rows.length) return rows;
-  }
-
-  // Fallback: old data-id approach
   const pane = document.querySelector('#pane-side');
   if (!pane) return [];
+  const grid = _getChatListGrid();
+  if (grid) {
+    const gridRows = Array.from(grid.querySelectorAll('[role="row"]')).filter(r => r.offsetHeight > 0);
+    if (gridRows.length) return gridRows;
+  }
+  const rowsByHelper = getChatRows(pane).filter(el => el && el.offsetHeight > 0);
+  if (rowsByHelper.length) return rowsByHelper;
+
+  // Fallback: old data-id approach
   const seen = new Set();
   const rows = [];
   pane.querySelectorAll('[data-id]').forEach(el => {
@@ -3178,18 +3739,36 @@ function getVisibleChatRows() {
   return rows.filter(el => el && el.offsetHeight > 0);
 }
 
-// Read React fiber props from a chat row element
+// Read React fiber props from a chat row element (returns the node with unreadStyle)
 function getRowFiberProps(row) {
   const fk = Object.keys(row).find(k => k.startsWith('__reactFiber'));
   if (!fk) return null;
   let f = row[fk];
   let depth = 0;
-  while (f && depth < 25) {
+  while (f && depth < 40) {
     if (f.memoizedProps && 'unreadStyle' in f.memoizedProps) return f.memoizedProps;
     f = f.child || f.sibling || (f.return ? f.return.sibling : null);
     depth++;
   }
   return null;
+}
+
+// Walk fiber to find the WA chat ID (e.g. "919...@c.us", "120...@g.us", "...@lid")
+// The id prop lives on a DIFFERENT fiber node than unreadStyle
+function getWAChatId(row) {
+  const fk = Object.keys(row).find(k => k.startsWith('__reactFiber'));
+  if (fk) {
+    let f = row[fk], depth = 0;
+    while (f && depth < 60) {
+      const p = f.memoizedProps;
+      if (p && p.id && /(@c\.us|@g\.us|@lid|@broadcast|@newsletter)$/.test(String(p.id))) {
+        return String(p.id);
+      }
+      f = f.child || f.sibling || (f.return ? f.return.sibling : null);
+      depth++;
+    }
+  }
+  return getRowDataId(row); // DOM fallback
 }
 
 function _hasUnreadBadge(row) {
@@ -3220,31 +3799,60 @@ function rowMatchesFilter(row, filter) {
   }
 
   if (filter === 'groups' || filter === 'one-to-one') {
-    const id = props ? String(props.id || '') : getRowDataId(row);
-    const isGroup = id.endsWith('@g.us');
-    return filter === 'groups' ? isGroup : !isGroup;
+    // Use dedicated WA ID finder — the id lives on a different fiber node than unreadStyle
+    const chatId = getWAChatId(row);
+    if (chatId) {
+      if (filter === 'groups') return chatId.endsWith('@g.us');
+      // 1-to-1: only real individual contacts, not groups/broadcasts/newsletters
+      return chatId.endsWith('@c.us') || chatId.endsWith('@lid');
+    }
+    // Fallback when WA ID is unavailable on this build: infer using row structure/icons.
+    const looksGroup = isRowGroup(row);
+    if (filter === 'groups') return looksGroup;
+    // 1-to-1: only real individual contacts, not groups/broadcasts/newsletters
+    return !looksGroup;
   }
 
   if (filter === 'waiting') {
-    // Awaiting reply: last message was sent by ME (outgoing tick present), no unread from them
-    // Outgoing tick SVG has viewBox="0 0 18 18" in current WA Web
-    const hasTick = !!row.querySelector('svg[viewBox="0 0 18 18"]');
-    const isUnread = props ? !!props.unreadStyle : _hasUnreadBadge(row);
+    // Awaiting reply: I sent the last message (outgoing) and they haven't replied (no unread).
+    // WA Web currently uses data-icon="status-dblcheck" / "status-check" for outgoing tick icons.
+    // Older builds used data-testid="msg-dblcheck" / data-icon="msg-dblcheck" — keep as fallbacks.
+    const hasTick = !!(
+      row.querySelector('[data-icon="status-dblcheck"]') ||
+      row.querySelector('[data-icon="status-check"]') ||
+      row.querySelector('[data-icon="status-dblcheck-blue"]') ||
+      row.querySelector('[data-icon="msg-dblcheck"]') ||
+      row.querySelector('[data-icon="msg-check"]') ||
+      row.querySelector('[data-testid="msg-dblcheck"]') ||
+      row.querySelector('[data-testid="msg-check"]') ||
+      row.querySelector('[data-testid="msg-time"]')
+    );
+    const isUnread = props ? !!(props.unreadStyle || props.unreadCount > 0) : _hasUnreadBadge(row);
     return hasTick && !isUnread;
   }
 
   if (filter === 'mentions') {
-    if (props && props.secondaryDetail && props.secondaryDetail.props) {
-      return !!props.secondaryDetail.props.unreadMentionIcon;
+    // Fiber-based: try several known prop paths across WA Web versions
+    if (props) {
+      if (props.unreadMentionCount > 0) return true;
+      if (props.unreadMentionIcon) return true;
+      // secondaryDetail is a React element — its props hold the mention flag
+      const sd = props.secondaryDetail;
+      if (sd && sd.props) {
+        if (sd.props.unreadMentionIcon || sd.props.unreadMentionCount > 0) return true;
+      }
     }
-    // DOM fallback
+    // DOM fallback — WA Web renders an @ badge for unread mentions
     return !!(
       row.querySelector('[data-icon="at-mentioned"]') ||
       row.querySelector('[data-icon="at"]') ||
+      row.querySelector('[data-icon="mention"]') ||
       row.querySelector('[data-testid="at-mentioned"]') ||
-      Array.from(row.querySelectorAll('span')).some(s =>
-        s.children.length === 0 && /@\w/.test(s.textContent)
-      )
+      row.querySelector('[data-testid="mentioned-badge"]') ||
+      row.querySelector('[aria-label*="mention"]') ||
+      row.querySelector('[title*="mention"]') ||
+      // Some WA builds render a plain "@" badge without icon attributes
+      Array.from(row.querySelectorAll('span')).some(s => s.textContent?.trim() === '@')
     );
   }
 
@@ -3252,13 +3860,243 @@ function rowMatchesFilter(row, filter) {
 }
 
 let labelObserver = null;
+let _compactTimer = null;
+let _compactScrollGrid = null;
+let _compactWindowResize = false;
+let _gridScrollThrottle = 0;
+
+function _getChatListGrid() {
+  const pane = document.querySelector('#pane-side');
+  if (!pane) return null;
+  const labeled = pane.querySelector('[role="grid"][aria-label="Chat list"]');
+  if (labeled && labeled.querySelector('[role="row"]')) return labeled;
+  // Prefer any grid in the sidebar that actually has chat rows (avoids emoji/search grids).
+  const grids = pane.querySelectorAll('[role="grid"]');
+  for (let i = 0; i < grids.length; i++) {
+    const g = grids[i];
+    if (g.querySelector('[role="row"]')) return g;
+  }
+  return null;
+}
+
+function _readTransformYFromStyle(transformStr) {
+  if (!transformStr || transformStr === 'none') return null;
+  let m = transformStr.match(/translateY\(([-\d.]+)px\)/);
+  if (m) return parseFloat(m[1]);
+  m = transformStr.match(/translate3d\([^,]*,\s*([-\d.]+)px/i);
+  if (m) return parseFloat(m[1]);
+  m = transformStr.match(/matrix\([^,]+,[^,]+,[^,]+,[^,]+,[^,]+,\s*([-\d.]+)\)/);
+  if (m) return parseFloat(m[1]);
+  m = transformStr.match(/matrix3d\(([^)]+)\)/);
+  if (m) {
+    const p = m[1].split(',').map(s => parseFloat(s.trim()));
+    if (p.length >= 14 && Number.isFinite(p[13])) return p[13]; // m42 = translateY
+  }
+  return null;
+}
+
+function _readTopPx(el) {
+  const top = el.style.top || window.getComputedStyle(el).top;
+  if (!top || top === 'auto') return null;
+  const n = parseFloat(top);
+  return Number.isFinite(n) ? n : null;
+}
+
+// Virtual row Y: transform on row or immediate row children (WA sometimes nests transform).
+function _getRowLayoutY(row) {
+  const tryEl = el => {
+    const t = el.style.transform || window.getComputedStyle(el).transform;
+    const ty = _readTransformYFromStyle(t);
+    if (ty !== null) return ty;
+    return _readTopPx(el);
+  };
+  let y = tryEl(row);
+  if (y !== null) return y;
+  const kids = row.querySelectorAll(':scope > div');
+  for (let i = 0; i < Math.min(kids.length, 6); i++) {
+    y = tryEl(kids[i]);
+    if (y !== null) return y;
+  }
+  return null;
+}
+
+function _detachCompactScrollListeners() {
+  if (_compactScrollGrid) {
+    _compactScrollGrid.removeEventListener('scroll', _onChatGridScroll);
+    _compactScrollGrid = null;
+  }
+  if (_compactWindowResize) {
+    window.removeEventListener('resize', _scheduleCompact);
+    _compactWindowResize = false;
+  }
+}
+
+function _attachCompactScrollListeners() {
+  const grid = _getChatListGrid();
+  if (!grid) return;
+  if (_compactScrollGrid !== grid) {
+    _detachCompactScrollListeners();
+    _compactScrollGrid = grid;
+    grid.addEventListener('scroll', _onChatGridScroll, { passive: true });
+  }
+  if (!_compactWindowResize) {
+    window.addEventListener('resize', _scheduleCompact, { passive: true });
+    _compactWindowResize = true;
+  }
+}
+
+function _onChatGridScroll() {
+  const t = performance.now();
+  if (t - _gridScrollThrottle < 24) return;
+  _gridScrollThrottle = t;
+  _compactVisibleRows();
+}
+
+// Get ALL chat rows including ones currently hidden by our filter
+// Prefer [role="row"] in the chat grid — same nodes WA virtualizes. Using inner
+// cell-frame-container alone hides children but leaves the row shell height → huge gaps.
+function getAllChatRows() {
+  const pane = document.querySelector('#pane-side');
+  if (pane) {
+    const grid = _getChatListGrid();
+    if (grid) {
+      const rows = Array.from(grid.querySelectorAll('[role="row"]'));
+      if (rows.length) return rows;
+    }
+    const rowsByHelper = getChatRows(pane);
+    if (rowsByHelper.length) return rowsByHelper;
+  }
+  return getVisibleChatRows(); // fallback
+}
+
+// Compact visible rows using !important transforms so WA React can't override during filter.
+// origY is saved before any compaction so we can restore precisely.
+function _compactVisibleRows() {
+  if (currentLabelFilter === 'all') return;
+  const grid = _getChatListGrid();
+  if (!grid) return;
+  const rows = Array.from(grid.querySelectorAll('[role="row"]'));
+  if (!rows.length) return;
+
+  // Read WA's current transforms BEFORE we touched anything (skip rows we already saved)
+  rows.forEach(r => {
+    if (!r.dataset.waOrigY) {
+      // Strip our !important so we read WA's actual value
+      const inlineHasImportant = r.style.getPropertyPriority('transform') === 'important';
+      if (inlineHasImportant) return; // Can't read WA's value while !important is set
+      const y = _getRowLayoutY(r);
+      if (y !== null) r.dataset.waOrigY = String(y);
+    }
+  });
+
+  // Sort by origY so we assign compact positions top-to-bottom
+  let sorted = rows
+    .map(r => ({ row: r, origY: parseFloat(r.dataset.waOrigY || '0') }))
+    .sort((a, b) => a.origY - b.origY);
+
+  if (sorted.length > 1) {
+    const y0 = sorted[0].origY;
+    if (sorted.every(x => x.origY === y0)) {
+      const vis = sorted.filter(x => x.row.style.display !== 'none');
+      const hid = sorted.filter(x => x.row.style.display === 'none');
+      vis.sort((a, b) => a.row.getBoundingClientRect().top - b.row.getBoundingClientRect().top);
+      sorted = vis.concat(hid);
+    }
+  }
+
+  const visible = sorted.filter(({ row }) => row.style.display !== 'none');
+  let ROW_H = 76;
+  if (visible.length) {
+    const hs = visible
+      .slice(0, 5)
+      .map(({ row }) => Math.round(row.getBoundingClientRect().height))
+      .filter(h => h > 12);
+    if (hs.length) {
+      hs.sort((a, b) => a - b);
+      ROW_H = hs[Math.floor(hs.length / 2)];
+    }
+  }
+  let compY = 4;
+  sorted.forEach(({ row }) => {
+    if (row.style.display === 'none') return;
+    row.style.setProperty('transform', `translateY(${compY}px)`, 'important');
+    compY += ROW_H;
+  });
+  // Never touch spacer height — WA's virtual list uses it to know total row count
+}
+
+function _scheduleCompact() {
+  clearTimeout(_compactTimer);
+  _compactTimer = setTimeout(_compactVisibleRows, 40);
+}
+
+// Restore all rows to WA-managed state.
+// Key insight: React still holds the correct transform values internally even while our
+// !important blocks them. Removing !important lets React's value surface again.
+// The only extra step is resetting the spacer if WA collapsed it to 76px (happens when
+// all rows were hidden, e.g. Mentions/Unread with 0 matches).
+function _restoreAllRows() {
+  _detachCompactScrollListeners();
+  const grid = _getChatListGrid();
+  if (!grid) return;
+
+  // Remove all our overrides — React's internally-stored transforms take effect again
+  grid.querySelectorAll('[role="row"]').forEach(r => {
+    r.style.removeProperty('display');
+    r.style.removeProperty('transform'); // Removes !important — WA React value surfaces
+    delete r.dataset.waOrigY;
+  });
+
+  // Reset spacer: WA collapses it to 76px when all rows are hidden.
+  // Removing the inline height forces WA's React reconciler to re-apply the real value.
+  Array.from(grid.children).forEach(child => {
+    if (!child.getAttribute('role') && child.style.height) {
+      child.style.removeProperty('height');
+    }
+  });
+
+  // Force WA's virtual list to fully recalculate positions + spacer
+  window.dispatchEvent(new Event('resize'));
+  const saved = grid.scrollTop;
+  grid.scrollTop = saved + 300;
+  setTimeout(() => {
+    grid.scrollTop = saved;
+    window.dispatchEvent(new Event('resize'));
+  }, 120);
+}
 
 function applyLabelFilter(filter) {
-  const rows = getVisibleChatRows();
-  rows.forEach(row => {
-    const show = rowMatchesFilter(row, filter);
-    row.style.setProperty('display', show ? '' : 'none', 'important');
+  const rows = getAllChatRows();
+
+  if (filter === 'all') {
+    _restoreAllRows();
+    return;
+  }
+
+  // Save WA's real origY before we touch anything.
+  // If we're switching FROM another filter, remove the old !important first so we can read WA's value.
+  rows.forEach(r => {
+    if (r.style.getPropertyPriority('transform') === 'important') {
+      // We had a previous filter active — the saved origY is still valid, keep it
+      r.style.removeProperty('transform'); // Let WA's value surface momentarily
+    }
+    if (!r.dataset.waOrigY) {
+      const y = _getRowLayoutY(r);
+      if (y !== null) r.dataset.waOrigY = String(y);
+    }
+    r.style.removeProperty('display');
   });
+
+  // Hide non-matching rows
+  rows.forEach(row => {
+    if (!rowMatchesFilter(row, filter)) {
+      row.style.setProperty('display', 'none', 'important');
+    }
+  });
+
+  _attachCompactScrollListeners();
+  // Compact after a short delay so WA's React can settle transforms first
+  _scheduleCompact();
 }
 
 function startLabelObserver() {
@@ -3266,7 +4104,21 @@ function startLabelObserver() {
   const pane = document.querySelector('#pane-side');
   if (!pane) return;
   labelObserver = new MutationObserver(() => {
-    if (currentLabelFilter !== 'all') applyLabelFilter(currentLabelFilter);
+    if (currentLabelFilter === 'all') return;
+    getAllChatRows().forEach(row => {
+      if (row.style.display === 'none') return; // Already hidden
+      if (!row.dataset.waOrigY) {
+        // New row rendered by WA's virtual list while filter is active — save origY
+        if (row.style.getPropertyPriority('transform') !== 'important') {
+          const y = _getRowLayoutY(row);
+          if (y !== null) row.dataset.waOrigY = String(y);
+        }
+      }
+      if (!rowMatchesFilter(row, currentLabelFilter)) {
+        row.style.setProperty('display', 'none', 'important');
+      }
+    });
+    _scheduleCompact();
   });
   labelObserver.observe(pane, { childList: true, subtree: true });
 }
@@ -4211,6 +5063,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  // Dismiss any invalid-number popup — called by background after hard-nav
+  if (msg.type === 'DISMISS_DIALOG') {
+    const dismissed = dismissInvalidDialog();
+    sendResponse({ dismissed });
+    return false;
+  }
+
   // Lightweight liveness check — background polls this after a hard-nav reload
   // to know when WA has fully booted (instead of a fixed 8-9 s sleep).
   if (msg.type === 'PING') {
@@ -4388,6 +5247,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ success: false, reason: 'Different chat open' });
     }
     return true;
+  }
+
+  if (msg.type === 'SHOW_CHAT_REMINDER_ALERT') {
+    showChatReminderAlert(msg.data);
+    sendResponse({ success: true });
+    return false;
   }
 
   if (msg.type === 'OPEN_CHAT_BY_NAME') {

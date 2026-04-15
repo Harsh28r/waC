@@ -261,11 +261,38 @@
         <div class="ai-status" id="aiStatus"></div>
       </div>
 
-      <!-- Delay (user sets manually — fixed, not random) -->
+      <!-- Delay (random range between min and max) -->
       <div class="form-group">
         <label class="label">Delay Between Messages (sec)</label>
-        <input type="number" id="minDelay" value="20" min="5" max="300" class="input" style="width:80px" title="You set this — fixed delay, not random">
-        <div class="hint mt-2">Manual: you choose the exact seconds between each send. Keep 15–45s to avoid bans.</div>
+        <div class="row gap-8 align-center">
+          <div style="display:flex;align-items:center;gap:6px">
+            <span style="font-size:11px;color:#8b949e">Min</span>
+            <input type="number" id="minDelay" value="20" min="5" max="300" class="input" style="width:72px" title="Minimum delay in seconds">
+          </div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <span style="font-size:11px;color:#8b949e">Max</span>
+            <input type="number" id="maxDelay" value="45" min="5" max="300" class="input" style="width:72px" title="Maximum delay in seconds">
+          </div>
+        </div>
+        <div class="hint mt-2">Random delay between Min–Max seconds per message. Randomness avoids WA spam detection. Recommended: 20–45s.</div>
+      </div>
+
+      <!-- Batch + Long Break -->
+      <div class="form-group">
+        <label class="label">🛡️ Batch Send + Long Break <span style="font-size:10px;color:#25D366;font-weight:400">(anti-block)</span></label>
+        <div class="row gap-8 align-center">
+          <div style="display:flex;align-items:center;gap:6px">
+            <span style="font-size:11px;color:#8b949e">Batch</span>
+            <input type="number" id="batchSize" value="20" min="5" max="200" class="input" style="width:72px" title="Messages per batch before long break">
+            <span style="font-size:11px;color:#8b949e">msgs</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <span style="font-size:11px;color:#8b949e">Break</span>
+            <input type="number" id="batchPause" value="300" min="30" max="3600" class="input" style="width:72px" title="Long pause in seconds between batches">
+            <span style="font-size:11px;color:#8b949e">sec</span>
+          </div>
+        </div>
+        <div class="hint mt-2">Send <strong>Batch</strong> messages, then pause for <strong>Break</strong> seconds before the next batch. Helps avoid blocks at 50+ messages. E.g. 20 msgs → 5 min break → repeat.</div>
       </div>
 
       <!-- Schedule Campaign -->
@@ -1068,14 +1095,15 @@
   <!-- ── Campaign Report Modal ──────────────────────────────────────────── -->
   <div id="campaignReport" class="report-overlay" style="display:none">
     <div class="report-card">
-      <div class="report-checkmark">✓</div>
-      <div class="report-title">Campaign Complete</div>
+      <div class="report-checkmark" id="reportCheckmark">✓</div>
+      <div class="report-title" id="reportTitle">Campaign Complete</div>
       <div class="report-name" id="reportCampaignName"></div>
       <div class="report-duration">⏱ Duration: <strong id="reportDuration">--</strong></div>
       <div class="report-stats">
         <div class="rstat green"><div class="rstat-num" id="rstat-sent">0</div><div class="rstat-lbl">Sent</div></div>
         <div class="rstat orange"><div class="rstat-num" id="rstat-invalid">0</div><div class="rstat-lbl">Invalid</div></div>
         <div class="rstat red"><div class="rstat-num" id="rstat-failed">0</div><div class="rstat-lbl">Failed</div></div>
+        <div class="rstat gray"><div class="rstat-num" id="rstat-notsent">0</div><div class="rstat-lbl">Not Sent</div></div>
         <div class="rstat blue"><div class="rstat-num" id="rstat-total">0</div><div class="rstat-lbl">Total</div></div>
       </div>
       <div class="report-rate-bar"><div class="rate-bar-fill" id="reportRateFill" style="width:0%"></div></div>
@@ -1087,6 +1115,10 @@
       <div id="reportFailedList" class="report-issues" style="display:none">
         <div class="report-issues-title">❌ Failed to Send</div>
         <div id="reportFailedItems" class="report-issues-list"></div>
+      </div>
+      <div id="reportNotSentList" class="report-issues" style="display:none">
+        <div class="report-issues-title">⏸ Not Sent (Campaign Stopped)</div>
+        <div id="reportNotSentItems" class="report-issues-list"></div>
       </div>
       <div class="report-actions">
         <button class="btn btn-outline btn-sm" id="reportExportBtn">⬇ Export CSV</button>

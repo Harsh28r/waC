@@ -5,6 +5,20 @@ let campaignRunning = false;
 let shouldStop      = false;
 let waTabId         = null;
 const __waRecentSendGuard = new Map();
+const NOTIFICATION_FEED_KEY = 'waNotificationFeed';
+const NOTIFICATION_FEED_MAX = 200;
+
+async function appendNotificationFeed(entry) {
+  try {
+    const stored = await chrome.storage.local.get(NOTIFICATION_FEED_KEY);
+    const feed = Array.isArray(stored[NOTIFICATION_FEED_KEY]) ? stored[NOTIFICATION_FEED_KEY] : [];
+    feed.unshift({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), ts: Date.now(), ...entry });
+    if (feed.length > NOTIFICATION_FEED_MAX) feed.length = NOTIFICATION_FEED_MAX;
+    await chrome.storage.local.set({ [NOTIFICATION_FEED_KEY]: feed });
+  } catch (e) {
+    console.warn('[WA] appendNotificationFeed failed:', e.message);
+  }
+}
 
 // ─── Keepalive + Birthday Alarms ──────────────────────────────────────────────
 chrome.alarms.create('keepalive', { periodInMinutes: 0.4 });
@@ -57,6 +71,10 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     handleMeetingAlert(alarm.name).catch(console.error);
   }
 
+  if (alarm.name.startsWith('chat-reminder-')) {
+    handleChatReminderAlert(alarm.name).catch(console.error);
+  }
+
   if (alarm.name.startsWith('task-')) {
     handleTaskAlarm(alarm.name).catch(console.error);
   }
@@ -73,6 +91,11 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         title: '⏰ Follow-up Due — WA Bulk AI',
         message: `Time to follow up with ${contact.name || contact.phone}`,
         priority: 2
+      });
+      appendNotificationFeed({
+        type: 'followup',
+        title: `Follow-up Due — ${contact.name || contact.phone}`,
+        message: `Time to follow up with ${contact.name || contact.phone}`
       });
       console.log('[WA] Follow-up notification for', phone);
     }
@@ -349,6 +372,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     SAVE_MEETING:           () => saveMeeting(msg.data),
     GET_MEETINGS:           () => getMeetings(),
     DELETE_MEETING:         () => deleteMeeting(msg.data),
+    SAVE_CHAT_REMINDER:     () => saveChatReminder(msg.data),
+    GET_CHAT_REMINDERS:     () => getChatReminders(msg.data),
+    DELETE_CHAT_REMINDER:   () => deleteChatReminder(msg.data),
+    GET_NOTIFICATION_FEED:  () => getNotificationFeed(),
+    CLEAR_NOTIFICATION_FEED: () => clearNotificationFeed(),
     TRANSLATE_TEXT:         () => translateText(msg.data),
     SET_TASK_ALARM:         () => setTaskAlarm(msg.data),
     CANCEL_TASK_ALARM:      () => cancelTaskAlarm(msg.data),
@@ -398,7 +426,7 @@ async function runCampaign(data) {
   console.log('[WA] Campaign start:', contacts.length, 'contacts, A/B:', abEnabled, imageUrl ? '(with media)' : '(text only)');
 
   const campaignStartTime = Date.now();
-  await broadcastProgress({ status: 'starting', total: contacts.length, currentIndex: 0, campaignStartTime });
+  await broadcastProgress({ status: 'starting', total: contacts.length, currentIndex: 0, campaignStartTime, sentCount: 0 });
 
   try {
     try {
@@ -417,15 +445,20 @@ async function runCampaign(data) {
     const dncStored = await chrome.storage.local.get('dnc');
     const dncSet = new Set((dncStored.dnc || []).map(p => p.replace(/[^0-9]/g, '')));
 
+    const batchSize  = Math.max(5, settings.batchSize  || 20);
+    const batchPause = Math.max(30, settings.batchPause || 300);
+    let batchCount = 0; // tracks contacts processed in current batch (excluding skipped DNC)
+
     for (let i = 0; i < contacts.length; i++) {
     if (shouldStop) break;
     const contact = contacts[i];
 
-    // Skip DNC contacts
+    // Skip DNC contacts (don't count toward batch)
     const phoneCleanCheck = (contact.phone || '').replace(/[^0-9]/g, '');
     if (dncSet.has(phoneCleanCheck)) {
       results.push({ contact: contact.name || contact.phone, phone: contact.phone, status: 'skipped', error: 'DNC — contact opted out', variant: 'A' });
-      await broadcastProgress({ status: 'sent', currentIndex: i, total: contacts.length, contact: contact.name || contact.phone, phone: contact.phone, variant: 'A', results: [...results] });
+      const sc0 = results.filter(r => r.status === 'sent').length;
+      await broadcastProgress({ status: 'skipped', currentIndex: i, total: contacts.length, contact: contact.name || contact.phone, phone: contact.phone, variant: 'A', results: [...results], sentCount: sc0 });
       continue;
     }
 
@@ -433,12 +466,13 @@ async function runCampaign(data) {
     const useB = abEnabled && templateB && (i % 2 === 1);
     const variant = useB ? 'B' : 'A';
 
-    await broadcastProgress({ status: 'personalizing', currentIndex: i, total: contacts.length, contact: contact.name || contact.phone, phone: contact.phone, variant });
+    const scBefore = results.filter(r => r.status === 'sent').length;
+    await broadcastProgress({ status: 'personalizing', currentIndex: i, total: contacts.length, contact: contact.name || contact.phone, phone: contact.phone, variant, sentCount: scBefore });
 
     const chosenTemplate = useB ? templateB : template;
     const message = await buildMessage(chosenTemplate, contact, settings);
 
-    await broadcastProgress({ status: 'sending', currentIndex: i, total: contacts.length, contact: contact.name || contact.phone, phone: contact.phone, variant, preview: message.substring(0, 60) });
+    await broadcastProgress({ status: 'sending', currentIndex: i, total: contacts.length, contact: contact.name || contact.phone, phone: contact.phone, variant, preview: message.substring(0, 60), sentCount: scBefore });
 
       const result = await sendWhatsAppMessage(waTabId, contact.phone, message, settings.stealthMode, imageUrl || null, imageMime, imageName, stagingKey || null);
     console.log('[WA] Result for', contact.phone, ':', result.success, result.error || '');
@@ -446,7 +480,28 @@ async function runCampaign(data) {
       chrome.storage.local.set({ lastMediaError: result.error });
     }
 
+    // Native WhatsApp Poll (tap options) — only on WA Web, sent after main message/media
+    const ro = settings.replyOptions;
+    if (result?.success && !result.dedupGuard && ro?.enabled && ro.mode === 'poll') {
+      const pollLines = (ro.lines || []).map(s => String(s).trim()).filter(Boolean);
+      if (pollLines.length >= 2) {
+        const pqRaw = (ro.pollQuestion && String(ro.pollQuestion).trim()) ? ro.pollQuestion : 'Quick question — tap one option:';
+        const pollQuestion = fillTemplate(pqRaw, contact);
+        await sleep(1800);
+        const pollRes = await sendMessageToTab(waTabId, {
+          type: 'SEND_POLL',
+          requestId: `poll_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 6)}`,
+          pollQuestion,
+          pollOptions: pollLines.slice(0, 12)
+        }, 6);
+        if (!pollRes || !pollRes.success) {
+          console.warn('[WA] Poll send failed:', pollRes?.error || pollRes);
+        }
+      }
+    }
+
     if (useB) bSent++; else aSent++;
+    batchCount++;
 
     // Detect invalid/not-found numbers vs other failures
     const isInvalid = !result.success && result.error && (
@@ -458,31 +513,54 @@ async function runCampaign(data) {
 
     results.push({ contact: contact.name || contact.phone, phone: contact.phone, status: resultStatus, error: result.error || null, message, variant });
 
-    await broadcastProgress({ status: resultStatus, currentIndex: i, total: contacts.length, contact: contact.name || contact.phone, phone: contact.phone, variant, results: [...results], campaignStartTime });
+    const scAfter = results.filter(r => r.status === 'sent').length;
+    await broadcastProgress({ status: resultStatus, currentIndex: i, total: contacts.length, contact: contact.name || contact.phone, phone: contact.phone, variant, results: [...results], campaignStartTime, sentCount: scAfter });
 
-    if (i < contacts.length - 1 && !shouldStop) {
-      const delaySec = randomInt(settings.minDelay, settings.maxDelay);
-      for (let s = delaySec; s > 0; s--) {
-        if (shouldStop) break;
-        await broadcastProgress({ status: 'waiting', currentIndex: i, total: contacts.length, nextIn: s, campaignStartTime });
-        await sleep(1000);
+    const isLastContact = (i === contacts.length - 1);
+    if (!isLastContact && !shouldStop) {
+      // ── Batch long break: after every batchSize messages, take a long pause ──
+      if (batchCount >= batchSize) {
+        batchCount = 0;
+        console.log(`[WA] Batch of ${batchSize} done — pausing ${batchPause}s before next batch`);
+        for (let s = batchPause; s > 0; s--) {
+          if (shouldStop) break;
+          await broadcastProgress({ status: 'batch_pause', currentIndex: i, total: contacts.length, nextIn: s, batchPause, campaignStartTime, sentCount: scAfter, results: [...results] });
+          await sleep(1000);
+        }
+      } else {
+        // Normal between-message delay (random between min and max)
+        const delaySec = randomInt(settings.minDelay, settings.maxDelay);
+        for (let s = delaySec; s > 0; s--) {
+          if (shouldStop) break;
+          await broadcastProgress({ status: 'waiting', currentIndex: i, total: contacts.length, nextIn: s, campaignStartTime, sentCount: scAfter });
+          await sleep(1000);
+        }
       }
     }
     }
 
+    // If campaign was stopped early, mark remaining contacts as not_sent
+    if (shouldStop && results.length < contacts.length) {
+      for (let i = results.length; i < contacts.length; i++) {
+        const contact = contacts[i];
+        results.push({ contact: contact.name || contact.phone, phone: contact.phone, status: 'not_sent', error: 'Campaign stopped', variant: 'A' });
+      }
+    }
+
     campaignRunning = false;
 
-    // Update analytics
-    await updateAnalytics(results, abEnabled ? { aSent, bSent, aReplies, bReplies } : null, settings.campaignName || '', template.substring(0, 80));
+    // Update analytics (only count actually-processed contacts, not not_sent)
+    const processedResults = results.filter(r => r.status !== 'not_sent');
+    await updateAnalytics(processedResults, abEnabled ? { aSent, bSent, aReplies, bReplies } : null, settings.campaignName || '', template.substring(0, 80));
 
     chrome.notifications.create({
       type: 'basic',
       iconUrl: 'icons/icon48.png',
       title: 'WA Bulk AI — Campaign Complete',
-      message: `Sent ${results.filter(r => r.status === 'sent').length}/${results.length} messages`
+      message: `Sent ${results.filter(r => r.status === 'sent').length}/${contacts.length} messages`
     });
 
-    await broadcastProgress({ status: 'completed', total: contacts.length, results, abStats: abEnabled ? { aSent, bSent } : null, campaignStartTime, campaignDurationMs: Date.now() - campaignStartTime });
+    await broadcastProgress({ status: 'completed', total: contacts.length, results, abStats: abEnabled ? { aSent, bSent } : null, campaignStartTime, campaignDurationMs: Date.now() - campaignStartTime, sentCount: results.filter(r => r.status === 'sent').length });
   } finally {
     campaignRunning = false;
     await removeStagingKey(stagingKey);
@@ -880,6 +958,9 @@ async function sendWhatsAppMessage(tabId, phone, message, stealthMode = false, i
         await sleep(800);
         await waitForTabLoad(tabId);
         await waitForWAReady(tabId, isVideo ? 18000 : 14000);
+        // Dismiss any "invalid phone number" popup WA shows after URL navigation
+        await sendMessageToTab(tabId, { type: 'DISMISS_DIALOG' }, 2).catch(() => {});
+        await sleep(300);
         const navPayload = {
           type: 'SEND_WITH_IMAGE',
           requestId,
@@ -1041,6 +1122,32 @@ function fillTemplate(template, contact) {
   return normalizeCampaignMessage(msg);
 }
 
+/** Plain-text “button-like” choices for campaigns (poll mode uses native WA Poll instead). */
+function formatReplyOptionsBlock(replyOptions) {
+  const ro = replyOptions;
+  if (!ro || !ro.enabled) return '';
+  if (ro.mode === 'poll') return '';
+  const lines = (ro.lines || []).map(s => String(s).trim()).filter(Boolean);
+  if (!lines.length) return '';
+  const fmt = ro.format || 'numbered';
+  const emojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
+  let out = '\n\n';
+  const hdr = (ro.header && String(ro.header).trim()) ? String(ro.header).trim() : 'Reply with a number:';
+  out += hdr + (hdr.endsWith(':') ? '' : ':') + '\n';
+  lines.forEach((line, i) => {
+    if (fmt === 'bullet') out += `• ${line}\n`;
+    else if (fmt === 'emoji') out += `${emojis[i] || `${i + 1}.`} ${line}\n`;
+    else out += `${i + 1}. ${line}\n`;
+  });
+  return out.trimEnd();
+}
+
+function appendReplyOptionsToMessage(body, settings) {
+  const extra = formatReplyOptionsBlock(settings?.replyOptions);
+  if (!extra) return normalizeCampaignMessage(body);
+  return normalizeCampaignMessage(String(body || '') + extra);
+}
+
 async function buildMessage(template, contact, settings) {
   let base = fillTemplate(template, contact);
 
@@ -1058,7 +1165,7 @@ async function buildMessage(template, contact, settings) {
 
   const useGemini = (settings.aiProvider || 'gemini') === 'gemini';
   const apiKey = useGemini ? (settings.geminiApiKey || '') : (settings.apiKey || '');
-  if (!settings.aiEnabled || !apiKey) return normalizeCampaignMessage(base);
+  if (!settings.aiEnabled || !apiKey) return appendReplyOptionsToMessage(base, settings);
 
   const prompt = `Personalize this WhatsApp message for the contact. Make it feel natural and personal. Keep the same intent. Max 300 chars. Return ONLY the message.\n\nContact: ${JSON.stringify(contact)}\n\nMessage:\n${base}`;
   try {
@@ -1075,7 +1182,7 @@ async function buildMessage(template, contact, settings) {
       const d = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(d.error?.message || 'API ' + res.status);
       const raw = d.candidates?.[0]?.content?.parts?.[0]?.text;
-      return normalizeCampaignMessage((raw && typeof raw === 'string') ? raw.trim() : base);
+      return appendReplyOptionsToMessage((raw && typeof raw === 'string') ? raw.trim() : base, settings);
     }
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -1088,10 +1195,10 @@ async function buildMessage(template, contact, settings) {
     });
     if (!res.ok) throw new Error('API ' + res.status);
     const d = await res.json();
-    return normalizeCampaignMessage(d.content?.[0]?.text?.trim() || base);
+    return appendReplyOptionsToMessage(d.content?.[0]?.text?.trim() || base, settings);
   } catch (e) {
     console.warn('[WA] AI failed:', e.message);
-    return normalizeCampaignMessage(base);
+    return appendReplyOptionsToMessage(base, settings);
   }
 }
 
@@ -1570,6 +1677,11 @@ async function handleMeetingAlert(alarmName) {
     priority:           2,
     requireInteraction: true
   });
+  appendNotificationFeed({
+    type: 'meeting',
+    title: `${whenTxt} — ${meeting.contactName}`,
+    message: `${meeting.title} • ${timeStr} • ${dateStr}`
+  });
 
   // Auto-send reminder WhatsApp message to the contact
   const tabs = await chrome.tabs.query({ url: 'https://web.whatsapp.com/*' });
@@ -1577,6 +1689,93 @@ async function handleMeetingAlert(alarmName) {
     const reminder = `⏰ *Meeting Reminder*\n\n*${meeting.title}* is starting ${minsLeft <= 1 ? 'now!' : `in ${minsLeft} minutes!`}\n📆 ${dateStr} · 🕐 ${timeStr} · 💻 ${meeting.platform}${meeting.link ? `\n🔗 ${meeting.link}` : ''}`;
     chrome.tabs.sendMessage(tabs[0].id, { type: 'SEND_MEETING_REMINDER', reminder, contactName: meeting.contactName }).catch(() => {});
   }
+}
+
+// ─── Per-Chat Reminder Alerts ──────────────────────────────────────────────────
+async function saveChatReminder({ contactName, title, remindAt, note = '' }) {
+  const denied = await denyIfUnlicensed();
+  if (denied) return { success: false, error: denied };
+  if (!contactName || !title || !remindAt) {
+    return { success: false, error: 'Missing reminder fields' };
+  }
+  const when = Number(remindAt);
+  if (!Number.isFinite(when) || when <= Date.now()) {
+    return { success: false, error: 'Reminder time must be in the future' };
+  }
+
+  const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  const reminder = { id, contactName, title, note, remindAt: when, createdAt: Date.now() };
+  const stored = await chrome.storage.local.get('chatReminders');
+  const reminders = stored.chatReminders || [];
+  reminders.push(reminder);
+  if (reminders.length > 300) reminders.splice(0, reminders.length - 300);
+  await chrome.storage.local.set({ chatReminders: reminders });
+  chrome.alarms.create(`chat-reminder-${id}`, { when });
+  return { success: true, id };
+}
+
+async function getChatReminders({ contactName } = {}) {
+  const stored = await chrome.storage.local.get('chatReminders');
+  let reminders = stored.chatReminders || [];
+  if (contactName) {
+    const needle = String(contactName).toLowerCase().trim();
+    reminders = reminders.filter(r => String(r.contactName || '').toLowerCase() === needle);
+  }
+  reminders = reminders.filter(r => r.remindAt > Date.now()).sort((a, b) => a.remindAt - b.remindAt);
+  return { success: true, reminders };
+}
+
+async function deleteChatReminder({ id }) {
+  if (!id) return { success: false, error: 'Reminder id missing' };
+  chrome.alarms.clear(`chat-reminder-${id}`);
+  const stored = await chrome.storage.local.get('chatReminders');
+  const reminders = (stored.chatReminders || []).filter(r => r.id !== id);
+  await chrome.storage.local.set({ chatReminders: reminders });
+  return { success: true };
+}
+
+async function handleChatReminderAlert(alarmName) {
+  const id = alarmName.replace('chat-reminder-', '');
+  const stored = await chrome.storage.local.get('chatReminders');
+  const reminder = (stored.chatReminders || []).find(r => r.id === id);
+  if (!reminder) return;
+
+  const whenDt = new Date(reminder.remindAt);
+  const timeStr = whenDt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+  const dateStr = whenDt.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+  const noteSuffix = reminder.note ? `\n📝 ${reminder.note}` : '';
+
+  chrome.notifications.create(`chat-reminder-notif-${id}`, {
+    type: 'basic',
+    iconUrl: chrome.runtime.getURL('assets/chat-reminder-icon.png'),
+    title: `Reminder — ${reminder.contactName}`,
+    message: `${reminder.title}\n${dateStr} · ${timeStr}${noteSuffix}`,
+    priority: 2,
+    requireInteraction: true
+  });
+  appendNotificationFeed({
+    type: 'reminder',
+    title: `Reminder — ${reminder.contactName}`,
+    message: `${reminder.title} • ${dateStr} • ${timeStr}${reminder.note ? ` • ${reminder.note}` : ''}`
+  });
+
+  const tabs = await chrome.tabs.query({ url: 'https://web.whatsapp.com/*' });
+  if (tabs.length > 0) {
+    chrome.tabs.sendMessage(tabs[0].id, {
+      type: 'SHOW_CHAT_REMINDER_ALERT',
+      data: {
+        id: reminder.id,
+        contactName: reminder.contactName,
+        title: reminder.title,
+        note: reminder.note || '',
+        dateStr,
+        timeStr
+      }
+    }).catch(() => {});
+  }
+
+  const remaining = (stored.chatReminders || []).filter(r => r.id !== id);
+  await chrome.storage.local.set({ chatReminders: remaining });
 }
 
 // ─── Text Translation (Google Translate unofficial API) ───────────────────────
@@ -1655,7 +1854,23 @@ async function handleTaskAlarm(alarmName) {
     message: task.title,
     priority: 2
   });
+  appendNotificationFeed({
+    type: 'task',
+    title: 'Task Reminder',
+    message: task.title
+  });
   console.log('[WA] Task alarm fired:', task.title);
+}
+
+async function getNotificationFeed() {
+  const stored = await chrome.storage.local.get(NOTIFICATION_FEED_KEY);
+  const items = Array.isArray(stored[NOTIFICATION_FEED_KEY]) ? stored[NOTIFICATION_FEED_KEY] : [];
+  return { success: true, items };
+}
+
+async function clearNotificationFeed() {
+  await chrome.storage.local.set({ [NOTIFICATION_FEED_KEY]: [] });
+  return { success: true };
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

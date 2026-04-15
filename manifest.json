@@ -34,7 +34,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["audio-interceptor.js"],
+      "resources": ["audio-interceptor.js", "assets/schedule-meeting-icon.png", "assets/chat-reminder-icon.png", "assets/notification-center-icon.png"],
       "matches": ["https://web.whatsapp.com/*"]
     }
   ],

@@ -283,9 +283,9 @@ select.input{cursor:pointer}
 .report-duration strong{font-weight:700}
 .report-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:5px;margin-bottom:10px}
 .rstat{background:#0d1117;border-radius:8px;padding:8px 2px;border:1px solid #21262d}
-.rstat.green{border-color:#25D36640}.rstat.orange{border-color:#d2992240}.rstat.red{border-color:#f8514940}.rstat.blue{border-color:#58a6ff40}
+.rstat.green{border-color:#25D36640}.rstat.orange{border-color:#d2992240}.rstat.red{border-color:#f8514940}.rstat.blue{border-color:#58a6ff40}.rstat.gray{border-color:#8b949e40}
 .rstat-num{font-size:20px;font-weight:700;color:#c9d1d9}
-.rstat.green .rstat-num{color:#25D366}.rstat.orange .rstat-num{color:#d29922}.rstat.red .rstat-num{color:#f85149}.rstat.blue .rstat-num{color:#58a6ff}
+.rstat.green .rstat-num{color:#25D366}.rstat.orange .rstat-num{color:#d29922}.rstat.red .rstat-num{color:#f85149}.rstat.blue .rstat-num{color:#58a6ff}.rstat.gray .rstat-num{color:#8b949e}
 .rstat-lbl{font-size:9px;color:#8b949e;text-transform:uppercase;letter-spacing:.3px;margin-top:2px}
 .report-rate-bar{height:6px;background:#21262d;border-radius:6px;overflow:hidden;margin-bottom:4px}
 .rate-bar-fill{height:100%;background:linear-gradient(90deg,#25D366,#00c44f);border-radius:6px;transition:width .8s ease}
