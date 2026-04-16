@@ -19,6 +19,7 @@
     </div>
     <div class="header-right">
       <button class="privacy-btn" id="privacyBtn" title="Toggle Privacy Mode">👁️</button>
+      <button class="privacy-btn" id="themeBtn" title="Toggle Light/Dark Mode">🌙</button>
       <div class="status-pill" id="statusPill">● Idle</div>
       <a href="https://wabulkai.com/#pricing" target="_blank" class="plan-pill" id="planPill" title="License status">Free</a>
       <button class="close-panel-btn" id="closePanelBtn" title="Close dashboard">×</button>
@@ -39,6 +40,8 @@
     <button class="tab requires-license" data-tab="analytics" data-phase="2">📊 Stats</button>
     <button class="tab requires-license" data-tab="dashboard" data-phase="2">📋 Dashboard</button>
     <button class="tab requires-license" data-tab="report" data-phase="2">📈 Data Report</button>
+    <button class="tab requires-license" data-tab="status" data-phase="2">📢 Status</button>
+    <button class="tab requires-license" data-tab="smartfu" data-phase="2">🔁 Follow-ups</button>
   </div>
   <div class="license-gate-banner" id="licenseGateBanner" style="display:none">
     🔒 <strong>Activation required</strong> — Start your <strong>7-day premium trial</strong> or paste a license key in <strong>Settings</strong> (bulk send, AI, drip, CRM, analytics).
@@ -140,6 +143,46 @@
 
       <div class="divider-line mt-14 mb-12"></div>
 
+      <!-- ── Segment Blast ─────────────────────────────────────── -->
+      <div class="section-badge">🎯 Segment Blast</div>
+      <p class="hint mb-8">Send a targeted message to one segment only — without running a full campaign.</p>
+      <div class="card mb-8">
+        <div class="form-group">
+          <label class="label">Select Segment</label>
+          <select id="segblast-seg" class="input mb-4">
+            <option value="">Select a segment...</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="label">Message for this segment</label>
+          <div class="textarea-wrap">
+            <textarea id="segblast-msg" class="textarea" rows="4" placeholder="Hi {name}, we have a special offer for you..."></textarea>
+            <button type="button" class="emoji-trigger-btn" data-emoji-for="segblast-msg" title="Insert emoji">😊</button>
+          </div>
+        </div>
+        <div class="row gap-6 align-center mb-6">
+          <span class="muted-text" id="segblast-count">0 contacts in segment</span>
+        </div>
+        <button class="btn btn-green" style="width:100%" id="segblast-sendBtn">🎯 Blast to Segment</button>
+        <div id="segblast-result" class="result-msg mt-6" style="display:none"></div>
+      </div>
+
+      <!-- ── Chat Export ────────────────────────────────────────── -->
+      <div class="section-badge">💾 Chat Export</div>
+      <p class="hint mb-8">Export the chat history of any contact to CSV.</p>
+      <div class="card mb-8">
+        <div class="form-group">
+          <label class="label">Select Contact</label>
+          <select id="chatexport-contact" class="input mb-4">
+            <option value="">Select a contact...</option>
+          </select>
+        </div>
+        <button class="btn btn-outline" style="width:100%" id="chatexport-btn">💾 Export Chat to CSV</button>
+        <div id="chatexport-result" class="result-msg mt-6" style="display:none"></div>
+      </div>
+
+      <div class="divider-line mt-14 mb-12"></div>
+
       <!-- ── Google Sheets Import ───────────────────────────── -->
       <div class="section-badge">📊 Google Sheets Import</div>
       <p class="hint mb-8">Import contacts from a public Google Sheet — no CSV download needed.</p>
@@ -220,7 +263,10 @@
         <div class="section-title mb-4">✉️ Message Template A</div>
         <p id="captionHint" class="hint mb-4" style="display:none">This text will be sent as the <strong>caption</strong> for the image/video above.</p>
         <p class="hint mb-6">Variables: <code>{name}</code> <code>{phone}</code> <code>{company}</code> or any CSV column</p>
-        <textarea id="msgTemplate" class="textarea compose-textarea" rows="6" placeholder="Hi {name}! I wanted to reach out about..."></textarea>
+        <div class="textarea-wrap">
+          <textarea id="msgTemplate" class="textarea compose-textarea" rows="6" placeholder="Hi {name}! I wanted to reach out about..."></textarea>
+          <button type="button" class="emoji-trigger-btn" data-emoji-for="msgTemplate" title="Insert emoji">😊</button>
+        </div>
         <div class="row justify-between mt-4">
           <span class="muted-text" id="charCount">0 chars</span>
           <span class="muted-text" id="waLimit"></span>
@@ -306,6 +352,40 @@
         <div id="scheduleResult" class="result-msg mt-6" style="display:none"></div>
       </div>
 
+      <!-- Smart Follow-up -->
+      <div class="card form-group">
+        <div class="row justify-between align-center mb-6">
+          <div>
+            <div class="section-title">🔁 Smart Follow-up</div>
+            <div class="hint mt-2">Auto-send if contacts don't reply within X days</div>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="smartfu-enabled">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div id="smartfu-panel" style="display:none">
+          <div class="row gap-8 mb-6 align-center">
+            <div style="flex:1">
+              <div class="label-sm mb-4">Condition</div>
+              <select id="smartfu-condition" class="input">
+                <option value="no_reply">No reply within</option>
+                <option value="always">Always after</option>
+              </select>
+            </div>
+            <div style="flex:1">
+              <div class="label-sm mb-4">Days</div>
+              <input type="number" id="smartfu-days" value="3" min="1" max="30" class="input">
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="label">Follow-up Message</label>
+            <textarea id="smartfu-msg" class="textarea" rows="3" placeholder="Hi {name}, just following up on my previous message..."></textarea>
+          </div>
+          <div class="hint">Follow-up will be sent to current contacts when you click Start Campaign.</div>
+        </div>
+      </div>
+
       <!-- Preview -->
       <div class="card form-group">
         <div class="section-title mb-4">👁 Preview</div>
@@ -334,7 +414,10 @@
 
       <div class="form-group">
         <label class="label">Message</label>
-        <textarea id="qs-message" class="textarea" rows="6" placeholder="Message (optional if Compose template is filled — template is used as caption for media)"></textarea>
+        <div class="textarea-wrap">
+          <textarea id="qs-message" class="textarea" rows="6" placeholder="Message (optional if Compose template is filled — template is used as caption for media)"></textarea>
+          <button type="button" class="emoji-trigger-btn" data-emoji-for="qs-message" title="Insert emoji">😊</button>
+        </div>
         <div class="row justify-between mt-4">
           <span class="muted-text" id="qs-charcount">0 chars</span>
         </div>
@@ -422,6 +505,23 @@
 
       <div id="tpl-list">
         <div class="empty-state" style="border:1px solid #21262d;border-radius:8px">No templates yet.</div>
+      </div>
+
+      <div class="divider-line mt-14 mb-12"></div>
+
+      <!-- ── Template Gallery ─────────────────────────────────── -->
+      <div class="section-badge">🎨 Template Gallery</div>
+      <p class="hint mb-8">Ready-made templates. Click any to load it into the message box above.</p>
+
+      <div class="row gap-6 mb-8" style="flex-wrap:wrap">
+        <button class="btn btn-outline btn-xs tpl-cat-btn active" data-cat="all">All</button>
+        <button class="btn btn-outline btn-xs tpl-cat-btn" data-cat="sales">Sales</button>
+        <button class="btn btn-outline btn-xs tpl-cat-btn" data-cat="followup">Follow-up</button>
+        <button class="btn btn-outline btn-xs tpl-cat-btn" data-cat="support">Support</button>
+        <button class="btn btn-outline btn-xs tpl-cat-btn" data-cat="events">Events</button>
+      </div>
+      <div id="tpl-gallery">
+        <!-- Rendered by JS -->
       </div>
     </div>
 
@@ -1057,7 +1157,121 @@
       </div>
     </div>
 
+    <!-- ════════════════════════════════════════════════
+         STATUS POSTER TAB
+         ════════════════════════════════════════════════ -->
+    <div class="panel" id="panel-status" data-phase="2">
+
+      <div class="section-badge mb-6">📢 WhatsApp Status Poster</div>
+      <p class="hint mb-10">Post text or image status updates directly to WhatsApp — scheduled or instant.</p>
+
+      <!-- Text Status -->
+      <div class="card mb-10">
+        <div class="section-title mb-6">✏️ Text Status</div>
+        <div class="textarea-wrap">
+          <textarea id="status-text" class="textarea" rows="4" placeholder="What's on your mind? (up to 700 chars)..." maxlength="700"></textarea>
+          <button type="button" class="emoji-trigger-btn" data-emoji-for="status-text" title="Insert emoji">😊</button>
+        </div>
+        <div class="row justify-between mt-4 mb-8">
+          <span class="muted-text" id="status-charcount">0 / 700</span>
+        </div>
+        <button class="btn btn-green" style="width:100%;margin-bottom:8px" id="status-postTextBtn">📢 Post Text Status</button>
+      </div>
+
+      <!-- Image Status -->
+      <div class="card mb-10">
+        <div class="section-title mb-6">🖼 Image Status</div>
+        <input type="file" id="status-imageFile" accept="image/*" style="display:none">
+        <div class="row gap-6 align-center mb-6">
+          <button class="btn btn-outline btn-sm" id="status-imagePickBtn" type="button">Choose Image</button>
+          <span class="muted-text" id="status-imageFileName">No file chosen</span>
+          <button class="btn btn-outline btn-sm" id="status-imageClearBtn" style="display:none">✕</button>
+        </div>
+        <div id="status-imagePreview" style="display:none;margin-bottom:8px">
+          <img id="status-previewImg" style="max-width:100%;max-height:120px;border-radius:6px" alt="">
+        </div>
+        <input type="text" id="status-caption" class="input mb-6" placeholder="Caption (optional)">
+        <button class="btn btn-green" style="width:100%" id="status-postImageBtn">🖼 Post Image Status</button>
+      </div>
+
+      <!-- Scheduled Status -->
+      <div class="card mb-10">
+        <div class="section-title mb-6">📅 Schedule Status</div>
+        <input type="datetime-local" id="status-scheduleTime" class="input mb-6">
+        <button class="btn btn-outline" style="width:100%" id="status-scheduleBtn">⏰ Schedule Status Post</button>
+        <div id="status-scheduleResult" class="result-msg mt-6" style="display:none"></div>
+      </div>
+
+      <div id="status-result" class="result-msg mt-8" style="display:none"></div>
+      <div class="hint mt-8">Tip: Keep WhatsApp Web open and logged in. The extension will automate the status posting flow.</div>
+    </div>
+
+    <!-- ════════════════════════════════════════════════
+         SMART FOLLOW-UPS TAB
+         ════════════════════════════════════════════════ -->
+    <div class="panel" id="panel-smartfu" data-phase="2">
+
+      <div class="section-badge mb-6">🔁 Smart Follow-up Manager</div>
+      <p class="hint mb-10">Create automated follow-up rules — fire after X days if contacts don't reply.</p>
+
+      <!-- Create Rule -->
+      <div class="card mb-10">
+        <div class="section-title mb-8">✏️ New Follow-up Rule</div>
+        <div class="form-group">
+          <label class="label">Rule Name</label>
+          <input type="text" id="sfu-name" class="input" placeholder="e.g. Cold Lead Follow-up, Post-Demo Check-in">
+        </div>
+        <div class="form-group">
+          <label class="label">Contacts</label>
+          <div class="hint mb-4">Uses your current loaded contacts list (<span id="sfu-contactCount">0</span> contacts).</div>
+          <label class="row align-center gap-6">
+            <input type="checkbox" id="sfu-useSegment" class="checkbox">
+            <span>Limit to a specific segment</span>
+          </label>
+          <select id="sfu-segmentSel" class="input mt-4" style="display:none">
+            <option value="">All contacts</option>
+          </select>
+        </div>
+        <div class="row gap-8 mb-8">
+          <div style="flex:1">
+            <label class="label">Condition</label>
+            <select id="sfu-condition" class="input">
+              <option value="no_reply">No reply</option>
+              <option value="always">Always</option>
+            </select>
+          </div>
+          <div style="flex:1">
+            <label class="label">After (days)</label>
+            <input type="number" id="sfu-days" value="3" min="1" max="60" class="input">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="label">Follow-up Message</label>
+          <div class="textarea-wrap">
+            <textarea id="sfu-message" class="textarea" rows="4" placeholder="Hi {name}, just checking in — did you get a chance to review my previous message?"></textarea>
+            <button type="button" class="emoji-trigger-btn" data-emoji-for="sfu-message" title="Insert emoji">😊</button>
+          </div>
+        </div>
+        <button class="btn btn-green" style="width:100%" id="sfu-saveBtn">💾 Save Follow-up Rule</button>
+        <div id="sfu-saveResult" class="result-msg mt-6" style="display:none"></div>
+      </div>
+
+      <!-- Saved Rules -->
+      <div class="section-title mb-8">📋 Active Rules</div>
+      <div id="sfu-list">
+        <div class="empty-state">No follow-up rules yet.</div>
+      </div>
+    </div>
+
   </div><!-- /panels -->
+
+  <!-- ── Emoji Picker ──────────────────────────────────────────────────── -->
+  <div id="emojiPicker" class="emoji-picker" style="display:none">
+    <div class="emoji-picker-search">
+      <input type="text" id="emojiSearch" placeholder="Search emoji..." class="input" style="font-size:12px;padding:5px 8px">
+    </div>
+    <div id="emojiGrid" class="emoji-grid"></div>
+  </div>
 
   <!-- ── Campaign Controls (Phase 2) ─────────────────────────────────────── -->
   <div class="controls" data-phase="2">

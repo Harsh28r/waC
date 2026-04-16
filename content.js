@@ -928,26 +928,19 @@ let privacyStyleEl    = null;
 let privacyObserver   = null;
 let privacyDebounce   = null;
 const PVT = 'data-wa-prv'; // marker attribute so we don't double-process
-
-// Multiple selector fallbacks — WA Web changes testids between versions
 const PRIVACY_TARGETS = [
-  // ── Each individual chat row (try multiple selectors) ──
   '[data-testid="cell-frame-container"]',
   '#pane-side [role="listitem"]',
   '#pane-side [tabindex="-1"]',
-  // ── Each message bubble ──
   '[data-testid="msg-container"]',
   '.message-in',
   '.message-out',
-  // ── Chat header ──
   '#main header',
-  // ── Profile pictures ──
   'img[src*="blob:"]',
-  // ── Status thumbnails ──
   '[data-testid="status-v3-thumbnail"]',
 ];
 
-// Badge-only CSS — no blur here, all blur is applied via JS
+// Badge + privacy CSS (blur avatar/name/preview; reveal on hover)
 const PRIVACY_BADGE_CSS = `
   #wa-prv-badge {
     position: fixed;
@@ -965,6 +958,29 @@ const PRIVACY_BADGE_CSS = `
     pointer-events: none;
     letter-spacing: 0.4px;
     box-shadow: 0 2px 12px rgba(248,81,73,0.25);
+  }
+  body.wa-prv-on #pane-side [data-testid="cell-frame-container"] [data-testid="cell-frame-title"],
+  body.wa-prv-on #pane-side [data-testid="cell-frame-container"] span[title][dir="auto"],
+  body.wa-prv-on #pane-side [data-testid="cell-frame-container"] [data-testid="cell-frame-secondary"],
+  body.wa-prv-on #pane-side [data-testid="cell-frame-container"] [dir="ltr"],
+  body.wa-prv-on #pane-side [data-testid="cell-frame-container"] [data-testid="last-msg-status"],
+  body.wa-prv-on #pane-side [data-testid="cell-frame-container"] img,
+  body.wa-prv-on #main [data-testid="conversation-info-header-chat-title"],
+  body.wa-prv-on #main [data-testid="conversation-info-header-subtitle"],
+  body.wa-prv-on #main header img {
+    filter: blur(7px) !important;
+    transition: filter 0.14s ease !important;
+  }
+  body.wa-prv-on #pane-side [data-testid="cell-frame-container"]:hover [data-testid="cell-frame-title"],
+  body.wa-prv-on #pane-side [data-testid="cell-frame-container"]:hover span[title][dir="auto"],
+  body.wa-prv-on #pane-side [data-testid="cell-frame-container"]:hover [data-testid="cell-frame-secondary"],
+  body.wa-prv-on #pane-side [data-testid="cell-frame-container"]:hover [dir="ltr"],
+  body.wa-prv-on #pane-side [data-testid="cell-frame-container"]:hover [data-testid="last-msg-status"],
+  body.wa-prv-on #pane-side [data-testid="cell-frame-container"]:hover img,
+  body.wa-prv-on #main header:hover [data-testid="conversation-info-header-chat-title"],
+  body.wa-prv-on #main header:hover [data-testid="conversation-info-header-subtitle"],
+  body.wa-prv-on #main header:hover img {
+    filter: none !important;
   }
 `;
 
@@ -993,6 +1009,8 @@ function unblurAll() {
 }
 
 function scanAndBlur() {
+  // CSS-driven privacy + JS fallback for WA DOM variants.
+  document.body.classList.add('wa-prv-on');
   PRIVACY_TARGETS.forEach(sel => {
     document.querySelectorAll(sel).forEach(blurEl);
   });
@@ -1000,20 +1018,26 @@ function scanAndBlur() {
 
 function setWAPrivacy(on) {
   if (on) {
-    if (privacyStyleEl) return; // already on
+    // Recover if reference got stale across WA rerenders.
+    if (!privacyStyleEl) privacyStyleEl = document.getElementById('wa-bulk-ai-privacy');
+    if (privacyStyleEl) {
+      scanAndBlur();
+      return;
+    }
 
     // Inject badge CSS + badge element
     privacyStyleEl = document.createElement('style');
     privacyStyleEl.id = 'wa-bulk-ai-privacy';
     privacyStyleEl.textContent = PRIVACY_BADGE_CSS;
     document.head.appendChild(privacyStyleEl);
+    document.body.classList.add('wa-prv-on');
 
     const badge = document.createElement('div');
     badge.id = 'wa-prv-badge';
     badge.textContent = '🔒  ON';
     document.body.appendChild(badge);
 
-    // Blur elements already in the DOM
+    // Blur elements already in the DOM (class-based CSS)
     scanAndBlur();
 
     // Watch for new elements (virtual list, React re-renders, chat switches)
@@ -1027,6 +1051,7 @@ function setWAPrivacy(on) {
     if (privacyStyleEl) { privacyStyleEl.remove(); privacyStyleEl = null; }
     if (privacyObserver) { privacyObserver.disconnect(); privacyObserver = null; }
     clearTimeout(privacyDebounce);
+    document.body.classList.remove('wa-prv-on');
     const badge = document.getElementById('wa-prv-badge');
     if (badge) badge.remove();
     unblurAll();
@@ -1679,18 +1704,19 @@ let meetingBtnObserver = null;
 
 function injectMeetingStyles() {
   const existing = document.getElementById('wa-meeting-styles');
-  if (existing && existing.dataset.v === '14') return;
+  if (existing && existing.dataset.v === '18') return;
   if (existing) existing.remove();
   const style = document.createElement('style');
   style.id = 'wa-meeting-styles';
-  style.dataset.v = '14';
+  style.dataset.v = '18';
   style.textContent = `
     #wa-meeting-bar {
       display: flex !important;
       align-items: center !important;
-      gap: 4px !important;
-      padding: 0 6px !important;
-      margin-right: 2px !important;
+      gap: 6px !important;
+      padding: 0 8px !important;
+      margin-left: 0 !important;
+      margin-right: 0 !important;
       background: transparent !important;
       border: none !important;
       height: auto !important;
@@ -1709,15 +1735,15 @@ function injectMeetingStyles() {
       border-radius: 50%;
       border: none;
       background: transparent;
-      color: #8696a0;
+      color: var(--icon, #8696a0);
       cursor: pointer;
       flex-shrink: 0;
       transition: background 0.15s, color 0.15s, transform 0.1s;
       position: relative;
     }
     .wa-icon-btn:hover {
-      background: #2a3942;
-      color: #e9edef;
+      background: var(--background-default-hover, #2a3942);
+      color: var(--text-primary, #e9edef);
       transform: scale(1.1);
     }
     .wa-icon-btn:active { transform: scale(0.95); }
@@ -2212,21 +2238,70 @@ function injectMeetingStyles() {
     /* ── Label Filter Bar ── */
     #wa-label-bar {
       display: flex !important; align-items: center !important; flex-shrink: 0 !important;
-      gap: 6px !important; padding: 6px 10px !important; background: #111b21 !important;
-      border-bottom: 1px solid #2a3942 !important;
+      gap: 6px !important; padding: 0 10px 0 8px !important; background: transparent !important;
+      border-bottom: none !important; height: 34px !important; min-height: 34px !important;
+      margin-right: 0 !important; margin-left: 0 !important;
+      flex: 1 1 auto !important; width: auto !important;
+      max-width: none !important; min-width: 0 !important;
       overflow-x: auto !important; box-sizing: border-box !important;
       scrollbar-width: none !important;
+      border-right: none !important;
+    }
+    #wa-top-header-strip {
+      display: flex !important;
+      align-items: center !important;
+      flex: 1 1 auto !important;
+      min-width: 0 !important;
+      gap: 0 !important;
+      margin-left: 0 !important;
+      background: var(--panel-background-lighter, var(--background-default, #111b21)) !important;
+      border-bottom: 1px solid var(--border-default, #1f2c34) !important;
+      border-left: 1px solid var(--border-default, #1f2c34) !important;
+      box-sizing: border-box !important;
+    }
+    #wa-top-header-cap {
+      display: block !important;
+      background: var(--panel-background-lighter, var(--background-default, #111b21)) !important;
+      border-bottom: 1px solid var(--border-default, #1f2c34) !important;
+      border-left: 1px solid var(--border-default, #1f2c34) !important;
+      box-sizing: border-box !important;
+      pointer-events: none !important;
+    }
+    body.wa-top-plate-on #app {
+      padding-top: var(--wa-top-plate-offset, 0px) !important;
+      box-sizing: border-box !important;
     }
     #wa-label-bar::-webkit-scrollbar { display: none !important; }
     .wa-label-chip {
-      display: inline-flex; align-items: center; gap: 4px;
-      padding: 4px 12px; border-radius: 14px; font-size: 12px; font-weight: 600;
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 3px 10px; border-radius: 999px; font-size: 11.5px; font-weight: 600;
       cursor: pointer; white-space: nowrap; border: 1px solid transparent;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      transition: all 0.15s; color: #8696a0; background: #2a3942;
+      transition: all 0.15s;
+      color: var(--text-secondary, #5b6574);
+      background: var(--background-default-hover, #f3f6fa);
     }
-    .wa-label-chip.active { background: #005c4b; color: #00a884; border-color: #00a884; }
-    .wa-label-chip:hover:not(.active) { background: #3b4a54; color: #e9edef; }
+    .wa-label-chip.active {
+      background: var(--unread-marker-background, #5a6cff);
+      color: var(--unread-marker-text, #fff);
+      border-color: var(--unread-marker-background, #5a6cff);
+    }
+    .wa-label-chip:hover:not(.active) {
+      background: var(--background-default-active, #e9eef5);
+      color: var(--text-primary, #303a48);
+    }
+    .wa-label-chip .wa-chip-count {
+      min-width: 16px; height: 16px; border-radius: 999px; padding: 0 5px;
+      display: inline-flex; align-items: center; justify-content: center;
+      font-size: 10px; font-weight: 700; line-height: 1;
+      background: var(--unread-marker-background, #6c4dff);
+      color: var(--unread-marker-text, #fff);
+    }
+    .wa-label-chip.active .wa-chip-count {
+      background: color-mix(in srgb, var(--unread-marker-background, #6c4dff) 16%, #fff);
+      color: var(--unread-marker-background, #5a6cff);
+    }
+    #wa-meeting-bar #wa-qr-btn { display: none !important; }
     /* ── Contact Card Panel ── */
     #wa-card-panel {
       position: fixed; background: #202c33; border: 1px solid #3b4a54;
@@ -2984,47 +3059,96 @@ async function sendMeetingInvite() {
 function positionMeetingBar() {
   const bar = document.getElementById('wa-meeting-bar');
   if (!bar) return;
-
-  // Anchor: the new-chat button lives in the LEFT sidebar header
-  const newChatBtn =
-    document.querySelector('[data-testid="new-chat-btn"]') ||
-    document.querySelector('button[aria-label="New chat"]') ||
-    document.querySelector('[title="New chat"]') ||
-    document.querySelector('span[data-icon="new-chat-outline"]');
-
-  if (!newChatBtn) { bar.style.display = 'none'; return; }
-
-  // Walk ALL the way up until the direct child of HEADER.
-  // WA sidebar: HEADER > DIV(flex-row) > [logo-div | icons-span]
-  // That direct child of HEADER is the flex row itself.
-  let el = newChatBtn;
-  while (el.parentElement && el.parentElement.tagName !== 'HEADER') {
-    el = el.parentElement;
+  const pane = document.querySelector('#pane-side');
+  const sideHeader = document.querySelector('#side header') || pane?.closest('#side')?.querySelector('header') || pane?.querySelector('header') || document.querySelector('header');
+  const labelBar = document.getElementById('wa-label-bar');
+  if (!sideHeader || !pane) {
+    bar.style.display = 'none';
+    document.getElementById('wa-top-header-strip')?.remove();
+    document.getElementById('wa-top-header-cap')?.remove();
+    document.body.classList.remove('wa-top-plate-on');
+    document.documentElement.style.setProperty('--wa-top-plate-offset', '0px');
+    return;
   }
-  if (!el.parentElement) { bar.style.display = 'none'; return; }
 
-  // el = direct child of HEADER (the flex row DIV)
-  const flexRow = el; // DIV containing [logo | icons]
-  const header  = el.parentElement;
-
-  // Insert before the last child of the flex row (the icons group [+][⋮])
-  // so our bar sits between the WA logo and the native icons.
-  const iconsGroup = flexRow.children.length > 1
-    ? flexRow.lastElementChild
-    : null;
-
-  // If flexRow only has 1 child, fall back: insert bar directly in HEADER before el
-  const [insertParent, insertBefore] = iconsGroup
-    ? [flexRow, iconsGroup]
-    : [header, el];
-
-  if (bar.parentElement !== insertParent) {
-    bar.style.position = 'relative';
-    bar.style.top  = '';
-    bar.style.left = '';
-    insertParent.insertBefore(bar, insertBefore);
+  // Place strip as a GLOBAL top plate (full width), like native extension bars.
+  const paneRect = pane.getBoundingClientRect();
+  const headRect = sideHeader.getBoundingClientRect();
+  const appRect = document.getElementById('app')?.getBoundingClientRect();
+  const left = 0;
+  const right = 0;
+  const appTop = Math.max(0, Math.round(appRect?.top || 0));
+  const baseHeaderH = Math.max(38, Math.min(52, Math.round(headRect.height || 44)));
+  let headerH = baseHeaderH;
+  let top = appTop;
+  const available = window.innerWidth - right - left;
+  if (available < 140) {
+    bar.style.display = 'none';
+    document.getElementById('wa-top-header-strip')?.remove();
+    document.getElementById('wa-top-header-cap')?.remove();
+    document.body.classList.remove('wa-top-plate-on');
+    document.documentElement.style.setProperty('--wa-top-plate-offset', '0px');
+    return;
   }
+
+  let strip = document.getElementById('wa-top-header-strip');
+  if (!strip) {
+    strip = document.createElement('div');
+    strip.id = 'wa-top-header-strip';
+    document.body.appendChild(strip);
+  }
+  if (strip.parentElement !== document.body) document.body.appendChild(strip);
+  let cap = document.getElementById('wa-top-header-cap');
+  if (!cap) {
+    cap = document.createElement('div');
+    cap.id = 'wa-top-header-cap';
+    document.body.appendChild(cap);
+  }
+  if (cap.parentElement !== document.body) document.body.appendChild(cap);
+
+  const capH = 10;
+  const capTop = appTop;
+  cap.style.position = 'fixed';
+  cap.style.left = `${left}px`;
+  cap.style.right = `${right}px`;
+  cap.style.top = `${capTop}px`;
+  cap.style.height = `${capH}px`;
+  cap.style.maxHeight = `${capH}px`;
+  cap.style.overflow = 'hidden';
+  cap.style.zIndex = '10001';
+  cap.style.display = 'block';
+
+  strip.style.position = 'fixed';
+  strip.style.left = `${left}px`;
+  strip.style.right = `${right}px`;
+  strip.style.top = `${top + capH}px`;
+  strip.style.height = `${headerH}px`;
+  strip.style.maxHeight = `${headerH}px`;
+  strip.style.overflow = 'hidden';
+  strip.style.zIndex = '10002';
+  strip.style.display = 'flex';
+  strip.style.alignItems = 'center';
+  strip.style.minWidth = '0';
+  strip.style.pointerEvents = 'auto';
+  strip.style.padding = '0 8px';
+  strip.style.background = 'var(--panel-background-lighter, var(--background-default, #111b21))';
+
+  const totalPlateH = capH + headerH;
+  document.documentElement.style.setProperty('--wa-top-plate-offset', `${totalPlateH}px`);
+  document.body.classList.add('wa-top-plate-on');
+
+  bar.style.position = 'relative';
+  bar.style.top  = '';
+  bar.style.left = '';
   bar.style.display = 'flex';
+  if (bar.parentElement !== strip) strip.appendChild(bar);
+  if (labelBar) {
+    if (labelBar.parentElement !== strip) strip.insertBefore(labelBar, bar);
+    labelBar.style.flex = '1 1 auto';
+    labelBar.style.width = 'auto';
+    labelBar.style.minWidth = '0';
+    labelBar.style.height = '100%';
+  }
 }
 
 // ── Privacy eye button — delegates to the existing setWAPrivacy() engine ───────
@@ -3040,7 +3164,8 @@ function _syncPrivacyBtn(isOn) {
 }
 
 function togglePrivacyMode() {
-  const isOn = !privacyStyleEl; // privacyStyleEl exists = currently ON
+  // Trust DOM as source of truth (safer after hot reload/rerender).
+  const isOn = !document.getElementById('wa-bulk-ai-privacy');
   setWAPrivacy(isOn);
   chrome.storage.local.set({ privacyOn: isOn });
   _syncPrivacyBtn(isOn);
@@ -3126,10 +3251,8 @@ function ensureMeetingBar() {
       return b;
     };
 
-    const SVG_BOLT = `<svg width="13" height="13" viewBox="0 0 14 14" fill="currentColor"><path d="M8.5 1L2 8.5h5.5L5.5 13l7-7.5H7L8.5 1z"/></svg>`;
     const NOTIF_ICON = `<img src="${chrome.runtime.getURL('assets/notification-center-icon.png')}" alt="" class="wa-btn-icon-image">`;
 
-    bar.appendChild(mkBtn('wa-qr-btn',      SVG_BOLT,   'Quick Reply Templates', '', toggleQuickReplyStrip));
     bar.appendChild(mkBtn('wa-privacy-btn', SVG_EYE_ON, 'Privacy Mode',          '', togglePrivacyMode));
     bar.appendChild(mkBtn('wa-notif-btn',   NOTIF_ICON, 'All Notifications',     '', openNotificationCenterModal));
 
@@ -3146,6 +3269,8 @@ function ensureMeetingBar() {
     b.addEventListener('click', e => { e.stopPropagation(); openNotificationCenterModal(); });
     bar.appendChild(b);
   }
+  // User requested no right-side "task" button in this top row.
+  bar?.querySelector('#wa-qr-btn')?.remove();
   positionMeetingBar();
 }
 
@@ -3640,6 +3765,12 @@ async function translateMessage(container, btn, textEl) {
 
 // ─── Conversation Label Filter Bar ───────────────────────────────────────────
 let currentLabelFilter = 'all';
+/** Last filter we fully reset transforms for — avoids strip/reapply on duplicate applyLabelFilter runs (stops blink). */
+let _lastAppliedLabelFilter = 'all';
+let _filterResyncTimer = null;
+let _labelObserverDebounceTimer = null;
+let _restoreAllRowsSweepTimer = null;
+let _restoreAllRowsSweepTimer2 = null;
 
 function ensureLabelFilterBar() {
   const pane = document.querySelector('#pane-side');
@@ -3658,20 +3789,34 @@ function ensureLabelFilterBar() {
     if (allTab && allTab.getAttribute('aria-selected') !== 'true') allTab.click();
   }
 
+  const existingBar = document.getElementById('wa-label-bar');
+  // Upgrade older injected bar markup (chip set/count markup drift).
+  if (existingBar && (
+    !existingBar.querySelector('[data-filter="official"]') ||
+    !existingBar.querySelector('[data-filter="business"]') ||
+    !existingBar.querySelector('.wa-chip-count')
+  )) existingBar.remove();
+
   if (!document.getElementById('wa-label-bar')) {
     const bar = document.createElement('div');
     bar.id = 'wa-label-bar';
     bar.innerHTML = `
-      <button class="wa-label-chip" data-filter="all">All</button>
-      <button class="wa-label-chip" data-filter="unread">Unread</button>
-      <button class="wa-label-chip" data-filter="one-to-one">1 to 1</button>
-      <button class="wa-label-chip" data-filter="groups">Groups</button>
-      <button class="wa-label-chip" data-filter="waiting">Awaiting Reply</button>
-      <button class="wa-label-chip" data-filter="mentions">@Mentions</button>
+      <button class="wa-label-chip" data-filter="all">All <span class="wa-chip-count">0</span></button>
+      <button class="wa-label-chip" data-filter="unread">Unread <span class="wa-chip-count">0</span></button>
+      <button class="wa-label-chip" data-filter="one-to-one">1 to 1 <span class="wa-chip-count">0</span></button>
+      <button class="wa-label-chip" data-filter="groups">Groups <span class="wa-chip-count">0</span></button>
+      <button class="wa-label-chip" data-filter="waiting">Awaiting Reply <span class="wa-chip-count">0</span></button>
+      <button class="wa-label-chip" data-filter="business">Business <span class="wa-chip-count">0</span></button>
+      <button class="wa-label-chip" data-filter="official">Official <span class="wa-chip-count">0</span></button>
     `;
 
-    // Insert inline in the sidebar, right where the WA native tablist is
-    if (waTablist && waTablist.parentElement) {
+    // Preferred placement: top header row (same row as custom icon buttons),
+    // matching the screenshot where tabs are above WhatsApp chat area.
+    const meetingBar = document.getElementById('wa-meeting-bar');
+    if (meetingBar && meetingBar.parentElement) {
+      meetingBar.parentElement.insertBefore(bar, meetingBar);
+    } else if (waTablist && waTablist.parentElement) {
+      // Fallback placement near WA native tabs.
       waTablist.parentElement.insertBefore(bar, waTablist);
     } else if (pane.parentElement) {
       pane.parentElement.insertBefore(bar, pane);
@@ -3686,6 +3831,7 @@ function ensureLabelFilterBar() {
 
     function runFilter() {
       applyLabelFilter(currentLabelFilter);
+      updateLabelFilterCounts();
     }
 
     bar.querySelectorAll('.wa-label-chip').forEach(chip => {
@@ -3693,18 +3839,26 @@ function ensureLabelFilterBar() {
         currentLabelFilter = chip.dataset.filter;
         bar.querySelectorAll('.wa-label-chip').forEach(c => c.classList.remove('active'));
         chip.classList.add('active');
+        clearTimeout(_filterResyncTimer);
         runFilter();
-        setTimeout(runFilter, 150);
-        setTimeout(runFilter, 500);
+        // One delayed resync after WA virtual list settles — not multiple fires (those caused blink).
+        _filterResyncTimer = setTimeout(runFilter, 320);
         if (currentLabelFilter !== 'all') startLabelObserver();
         else stopLabelObserver();
       });
     });
   }
+  positionLabelBar();
+  updateLabelFilterCounts();
 }
 
 function positionLabelBar() {
-  // No-op: bar is now inline in the DOM, no fixed positioning needed
+  const bar = document.getElementById('wa-label-bar');
+  if (!bar) return;
+  const meetingBar = document.getElementById('wa-meeting-bar');
+  if (meetingBar && meetingBar.parentElement && bar.parentElement !== meetingBar.parentElement) {
+    meetingBar.parentElement.insertBefore(bar, meetingBar);
+  }
 }
 
 // Chat list: find rows using the current WA Web grid structure
@@ -3798,19 +3952,27 @@ function rowMatchesFilter(row, filter) {
     return _hasUnreadBadge(row);
   }
 
-  if (filter === 'groups' || filter === 'one-to-one') {
+  if (filter === 'groups' || filter === 'one-to-one' || filter === 'broadcast' || filter === 'business' || filter === 'official') {
     // Use dedicated WA ID finder — the id lives on a different fiber node than unreadStyle
     const chatId = getWAChatId(row);
     if (chatId) {
       if (filter === 'groups') return chatId.endsWith('@g.us');
+      if (filter === 'broadcast') return /@broadcast$/.test(chatId);
+      if (filter === 'business') return isRowBusiness(row);
+      if (filter === 'official') return isRowOfficial(row);
       // 1-to-1: only real individual contacts, not groups/broadcasts/newsletters
       return chatId.endsWith('@c.us') || chatId.endsWith('@lid');
     }
     // Fallback when WA ID is unavailable on this build: infer using row structure/icons.
     const looksGroup = isRowGroup(row);
+    const looksBroadcast = isRowBroadcast(row);
+    const looksBusiness = isRowBusiness(row);
     if (filter === 'groups') return looksGroup;
+    if (filter === 'broadcast') return looksBroadcast;
+    if (filter === 'business') return looksBusiness;
+    if (filter === 'official') return isRowOfficial(row);
     // 1-to-1: only real individual contacts, not groups/broadcasts/newsletters
-    return !looksGroup;
+    return !looksGroup && !looksBroadcast && !looksBusiness;
   }
 
   if (filter === 'waiting') {
@@ -3864,6 +4026,8 @@ let _compactTimer = null;
 let _compactScrollGrid = null;
 let _compactWindowResize = false;
 let _gridScrollThrottle = 0;
+let _allRowsCleanupObserver = null;
+let _allRowsCleanupTimer = null;
 
 function _getChatListGrid() {
   const pane = document.querySelector('#pane-side');
@@ -3947,9 +4111,9 @@ function _attachCompactScrollListeners() {
 
 function _onChatGridScroll() {
   const t = performance.now();
-  if (t - _gridScrollThrottle < 24) return;
+  if (t - _gridScrollThrottle < 90) return;
   _gridScrollThrottle = t;
-  _compactVisibleRows();
+  _scheduleCompact();
 }
 
 // Get ALL chat rows including ones currently hidden by our filter
@@ -4016,10 +4180,16 @@ function _compactVisibleRows() {
       ROW_H = hs[Math.floor(hs.length / 2)];
     }
   }
-  let compY = 4;
+  // Anchor compaction around current viewport to avoid visible "jumping" while
+  // switching filters or when WA virtual list re-renders during scroll.
+  let compY = Math.max(4, Math.round(grid.scrollTop) + 4);
   sorted.forEach(({ row }) => {
     if (row.style.display === 'none') return;
-    row.style.setProperty('transform', `translateY(${compY}px)`, 'important');
+    const yStr = String(compY);
+    if (row.dataset.waCompactY !== yStr) {
+      row.dataset.waCompactY = yStr;
+      row.style.setProperty('transform', `translateY(${compY}px)`, 'important');
+    }
     compY += ROW_H;
   });
   // Never touch spacer height — WA's virtual list uses it to know total row count
@@ -4027,7 +4197,7 @@ function _compactVisibleRows() {
 
 function _scheduleCompact() {
   clearTimeout(_compactTimer);
-  _compactTimer = setTimeout(_compactVisibleRows, 40);
+  _compactTimer = setTimeout(_compactVisibleRows, 110);
 }
 
 // Restore all rows to WA-managed state.
@@ -4037,66 +4207,156 @@ function _scheduleCompact() {
 // all rows were hidden, e.g. Mentions/Unread with 0 matches).
 function _restoreAllRows() {
   _detachCompactScrollListeners();
+  clearTimeout(_compactTimer);
+  clearTimeout(_filterResyncTimer);
+  clearTimeout(_labelObserverDebounceTimer);
+  clearTimeout(_restoreAllRowsSweepTimer);
+  clearTimeout(_restoreAllRowsSweepTimer2);
+  _restoreAllRowsSweepTimer = null;
+  _restoreAllRowsSweepTimer2 = null;
+  const pane = document.querySelector('#pane-side');
   const grid = _getChatListGrid();
-  if (!grid) return;
 
   // Remove all our overrides — React's internally-stored transforms take effect again
-  grid.querySelectorAll('[role="row"]').forEach(r => {
+  const rows = new Set();
+  if (pane) {
+    getAllChatRows().forEach(r => rows.add(r));
+    pane.querySelectorAll('[role="row"],[data-testid="cell-frame-container"]').forEach(r => rows.add(r));
+  }
+  rows.forEach(r => {
     r.style.removeProperty('display');
     r.style.removeProperty('transform'); // Removes !important — WA React value surfaces
     delete r.dataset.waOrigY;
+    delete r.dataset.waCompactY;
   });
+  if (!grid) return;
 
   // Reset spacer: WA collapses it to 76px when all rows are hidden.
   // Removing the inline height forces WA's React reconciler to re-apply the real value.
-  Array.from(grid.children).forEach(child => {
-    if (!child.getAttribute('role') && child.style.height) {
-      child.style.removeProperty('height');
+  const sweep = () => {
+    const activeGrid = _getChatListGrid() || grid;
+    if (!activeGrid) return;
+    const all = activeGrid.querySelectorAll('[role="row"], [data-testid="cell-frame-container"]');
+    all.forEach(r => {
+      r.style.removeProperty('display');
+      if (r.style.getPropertyPriority('transform') === 'important') r.style.removeProperty('transform');
+      delete r.dataset.waOrigY;
+      delete r.dataset.waCompactY;
+    });
+    Array.from(activeGrid.children).forEach(child => {
+      if (!child.getAttribute('role') && child.style.height) child.style.removeProperty('height');
+    });
+    // If rows are still offset far below viewport after restore, normalize once.
+    const visRows = Array.from(activeGrid.querySelectorAll('[role="row"]'))
+      .filter(r => r.style.display !== 'none');
+    if (visRows.length) {
+      const gridTop = activeGrid.getBoundingClientRect().top;
+      const firstTop = Math.min(...visRows.map(r => r.getBoundingClientRect().top));
+      const gap = Math.round(firstTop - gridTop);
+      if (gap > 120) activeGrid.scrollTop = Math.max(0, activeGrid.scrollTop - gap + 8);
     }
-  });
-
-  // Force WA's virtual list to fully recalculate positions + spacer
+  };
+  // Run multiple short sweeps to catch recycled virtualized rows without scroll jumps.
+  sweep();
+  _restoreAllRowsSweepTimer = setTimeout(() => { sweep(); _restoreAllRowsSweepTimer = null; }, 180);
+  _restoreAllRowsSweepTimer2 = setTimeout(() => { sweep(); _restoreAllRowsSweepTimer2 = null; }, 420);
   window.dispatchEvent(new Event('resize'));
-  const saved = grid.scrollTop;
-  grid.scrollTop = saved + 300;
-  setTimeout(() => {
-    grid.scrollTop = saved;
-    window.dispatchEvent(new Event('resize'));
-  }, 120);
+  requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
 }
 
 function applyLabelFilter(filter) {
   const rows = getAllChatRows();
 
   if (filter === 'all') {
+    const switchedFromOther = _lastAppliedLabelFilter !== 'all';
+    _lastAppliedLabelFilter = 'all';
     _restoreAllRows();
+    // Hard guard: when coming back from compacted filters, snap list to start once.
+    if (switchedFromOther) {
+      requestAnimationFrame(() => {
+        const grid = _getChatListGrid();
+        if (!grid) return;
+        if (grid.scrollTop > 0) grid.scrollTop = 0;
+      });
+    }
+    startAllRowsCleanupObserver();
     return;
   }
+  stopAllRowsCleanupObserver();
 
-  // Save WA's real origY before we touch anything.
-  // If we're switching FROM another filter, remove the old !important first so we can read WA's value.
+  const filterChanged = filter !== _lastAppliedLabelFilter;
+  _lastAppliedLabelFilter = filter;
+
+  // Only strip our !important + clear saved Y when the chip actually changed.
+  // Re-runs (delayed resync, observer) must not flash WA→us→WA every time.
+  if (filterChanged) {
+    rows.forEach(r => {
+      delete r.dataset.waOrigY;
+      delete r.dataset.waCompactY;
+      if (r.style.getPropertyPriority('transform') === 'important') {
+        r.style.removeProperty('transform');
+      }
+    });
+  }
+
   rows.forEach(r => {
-    if (r.style.getPropertyPriority('transform') === 'important') {
-      // We had a previous filter active — the saved origY is still valid, keep it
-      r.style.removeProperty('transform'); // Let WA's value surface momentarily
-    }
     if (!r.dataset.waOrigY) {
       const y = _getRowLayoutY(r);
       if (y !== null) r.dataset.waOrigY = String(y);
     }
-    r.style.removeProperty('display');
+    // Only clear display when filter chip changed or row might be visible again — never
+    // flash every hidden row on each poll/observer resync (that caused visible blinking).
+    if (filterChanged || rowMatchesFilter(r, filter)) {
+      r.style.removeProperty('display');
+    }
   });
 
   // Hide non-matching rows
   rows.forEach(row => {
     if (!rowMatchesFilter(row, filter)) {
       row.style.setProperty('display', 'none', 'important');
+      delete row.dataset.waCompactY;
     }
   });
 
   _attachCompactScrollListeners();
-  // Compact after a short delay so WA's React can settle transforms first
   _scheduleCompact();
+  updateLabelFilterCounts();
+}
+
+function _clearRowFilterStyles(row) {
+  row.style.removeProperty('display');
+  if (row.style.getPropertyPriority('transform') === 'important') row.style.removeProperty('transform');
+  delete row.dataset.waOrigY;
+  delete row.dataset.waCompactY;
+}
+
+function startAllRowsCleanupObserver() {
+  stopAllRowsCleanupObserver();
+  const pane = document.querySelector('#pane-side');
+  if (!pane) return;
+  const sweep = () => {
+    const grid = _getChatListGrid();
+    if (!grid) return;
+    grid.querySelectorAll('[role="row"], [data-testid="cell-frame-container"]').forEach(_clearRowFilterStyles);
+    Array.from(grid.children).forEach(child => {
+      if (!child.getAttribute('role') && child.style.height) child.style.removeProperty('height');
+    });
+  };
+  // Initial immediate cleanup + observe short window for recycled virtual rows.
+  sweep();
+  _allRowsCleanupObserver = new MutationObserver(sweep);
+  _allRowsCleanupObserver.observe(pane, { childList: true, subtree: true });
+  _allRowsCleanupTimer = setTimeout(() => stopAllRowsCleanupObserver(), 1200);
+}
+
+function stopAllRowsCleanupObserver() {
+  if (_allRowsCleanupObserver) {
+    _allRowsCleanupObserver.disconnect();
+    _allRowsCleanupObserver = null;
+  }
+  clearTimeout(_allRowsCleanupTimer);
+  _allRowsCleanupTimer = null;
 }
 
 function startLabelObserver() {
@@ -4105,26 +4365,62 @@ function startLabelObserver() {
   if (!pane) return;
   labelObserver = new MutationObserver(() => {
     if (currentLabelFilter === 'all') return;
-    getAllChatRows().forEach(row => {
-      if (row.style.display === 'none') return; // Already hidden
-      if (!row.dataset.waOrigY) {
-        // New row rendered by WA's virtual list while filter is active — save origY
-        if (row.style.getPropertyPriority('transform') !== 'important') {
-          const y = _getRowLayoutY(row);
-          if (y !== null) row.dataset.waOrigY = String(y);
+    clearTimeout(_labelObserverDebounceTimer);
+    _labelObserverDebounceTimer = setTimeout(() => {
+      if (currentLabelFilter === 'all') return;
+      getAllChatRows().forEach(row => {
+        if (row.style.display === 'none') return; // Already hidden
+        if (!row.dataset.waOrigY) {
+          if (row.style.getPropertyPriority('transform') !== 'important') {
+            const y = _getRowLayoutY(row);
+            if (y !== null) row.dataset.waOrigY = String(y);
+          }
         }
-      }
-      if (!rowMatchesFilter(row, currentLabelFilter)) {
-        row.style.setProperty('display', 'none', 'important');
-      }
-    });
-    _scheduleCompact();
+        if (!rowMatchesFilter(row, currentLabelFilter)) {
+          row.style.setProperty('display', 'none', 'important');
+          delete row.dataset.waCompactY;
+        }
+      });
+      _scheduleCompact();
+    }, 140);
   });
   labelObserver.observe(pane, { childList: true, subtree: true });
 }
 
 function stopLabelObserver() {
   if (labelObserver) { labelObserver.disconnect(); labelObserver = null; }
+  clearTimeout(_labelObserverDebounceTimer);
+  _labelObserverDebounceTimer = null;
+}
+
+function updateLabelFilterCounts() {
+  const bar = document.getElementById('wa-label-bar');
+  if (!bar) return;
+  const rows = getAllChatRows();
+  const counts = {
+    all: rows.length,
+    unread: 0,
+    'one-to-one': 0,
+    groups: 0,
+    business: 0,
+    official: 0,
+    waiting: 0,
+  };
+
+  Object.keys(counts).forEach(filter => {
+    if (filter === 'all') return;
+    let c = 0;
+    rows.forEach(row => { if (rowMatchesFilter(row, filter)) c++; });
+    counts[filter] = c;
+  });
+
+  bar.querySelectorAll('.wa-label-chip').forEach(chip => {
+    const filter = chip.dataset.filter;
+    const badge = chip.querySelector('.wa-chip-count');
+    if (!badge) return;
+    const val = Number.isFinite(counts[filter]) ? counts[filter] : 0;
+    badge.textContent = String(val);
+  });
 }
 
 // ─── Chat row selector helper (WA Web changes selectors between versions) ─────
@@ -4180,6 +4476,46 @@ function isRowGroup(row) {
     row.querySelector('[data-icon*="group"]')
   )) return true;
   return false;
+}
+
+function isRowBroadcast(row) {
+  const id = getWAChatId(row) || row.dataset?.id || getRowDataId(row) || '';
+  if (/@broadcast$/.test(id)) return true;
+  if (row.querySelector && (
+    row.querySelector('[data-testid*="broadcast"]') ||
+    row.querySelector('[data-icon*="broadcast"]') ||
+    row.querySelector('[aria-label*="Broadcast"]') ||
+    row.querySelector('[title*="Broadcast"]')
+  )) return true;
+  return false;
+}
+
+function isRowBusiness(row) {
+  const props = getRowFiberProps(row);
+  if (props && (
+    props.isBusiness ||
+    props.isBusinessAccount ||
+    props.businessInfo ||
+    props.businessBadge
+  )) return true;
+  return !!(
+    row.querySelector('[data-testid*="business"]') ||
+    row.querySelector('[data-icon*="business"]') ||
+    row.querySelector('[aria-label*="business" i]') ||
+    row.querySelector('[title*="business" i]')
+  );
+}
+
+function isRowOfficial(row) {
+  const chatId = getWAChatId(row) || row.dataset?.id || getRowDataId(row) || '';
+  if (chatId.endsWith('@newsletter')) return true;
+  return !!(
+    row.querySelector('[data-testid*="verified"]') ||
+    row.querySelector('[data-icon*="verified"]') ||
+    row.querySelector('[data-icon*="newsletter"]') ||
+    row.querySelector('[aria-label*="official" i]') ||
+    row.querySelector('[title*="official" i]')
+  );
 }
 
 // ─── Virtual Pin (up to 8 pinned chats in WA Web list) ───────────────────────
@@ -5264,6 +5600,207 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     sendResponse({ ready: true });
     return false;
   }
+
+  // ── READ_CHAT_MESSAGES: scrape visible messages in current chat ──────────────
+  if (msg.type === 'READ_CHAT_MESSAGES') {
+    try {
+      const limit = msg.limit || 100;
+      const rows = [];
+      // Messages can be in .message-in / .message-out containers
+      const containers = document.querySelectorAll('[data-testid="msg-container"], .message-in, .message-out');
+      containers.forEach(container => {
+        const isMe = container.classList.contains('message-out') ||
+          !!container.querySelector('[data-testid="msg-dblcheck"], [data-testid="msg-check"], [data-testid="msg-time"]');
+        const textEl = container.querySelector('[data-testid="selectable-text"], .selectable-text.copyable-text, span.selectable-text');
+        const text = textEl ? textEl.textContent.trim() : '';
+        if (!text) return;
+        // Time from data-pre-plain-text attribute or nearby time element
+        const pre = container.closest('[data-pre-plain-text]')?.dataset?.prePlainText || '';
+        const timeMatch = pre.match(/\[(\d{1,2}:\d{2}[^,\]]*)/);
+        const timeEl = container.querySelector('[data-testid="msg-meta"] span, ._ao3e, time');
+        const time = timeMatch ? timeMatch[1].trim() : (timeEl ? timeEl.textContent.trim() : '');
+        rows.push({ from: isMe ? 'me' : 'them', text, time });
+      });
+      sendResponse({ messages: rows.slice(-limit) });
+    } catch (e) {
+      sendResponse({ messages: [], error: e.message });
+    }
+    return false;
+  }
+
+  // ── POST_WA_STATUS: click Status tab, type/upload, and send ─────────────────
+  if (msg.type === 'POST_WA_STATUS') {
+    (async () => {
+      try {
+        // Try to find the Status navigation tab in WA Web left sidebar
+        const statusTab =
+          document.querySelector('[data-testid="status"]') ||
+          document.querySelector('[aria-label="Status"]') ||
+          document.querySelector('[title="Status"]') ||
+          Array.from(document.querySelectorAll('span[data-icon]')).find(el => el.dataset.icon === 'status-filled' || el.dataset.icon === 'status');
+
+        if (!statusTab) return sendResponse({ success: false, error: 'Status tab not found. Make sure WhatsApp Web is open and logged in.' });
+
+        statusTab.click();
+        await sleep(1500);
+
+        // Find "Add to status" / "+" button
+        const addBtn =
+          document.querySelector('[data-testid="status-fab"]') ||
+          document.querySelector('[aria-label="Add Status"]') ||
+          document.querySelector('[aria-label="New status"]') ||
+          document.querySelector('[data-testid="add-status-button"]') ||
+          Array.from(document.querySelectorAll('button, [role="button"]')).find(el =>
+            el.getAttribute('aria-label')?.toLowerCase().includes('add') ||
+            el.getAttribute('title')?.toLowerCase().includes('add status')
+          );
+
+        if (!addBtn) return sendResponse({ success: false, error: 'Could not find "Add to status" button.' });
+
+        if (msg.imageData) {
+          // Click the attach/photo option
+          addBtn.click();
+          await sleep(800);
+          // Look for photo/image option
+          const photoOpt =
+            document.querySelector('[data-testid="photos-and-videos"]') ||
+            document.querySelector('[aria-label="Photos and videos"]') ||
+            Array.from(document.querySelectorAll('li, [role="menuitem"]')).find(el =>
+              el.textContent?.toLowerCase().includes('photo') || el.textContent?.toLowerCase().includes('image')
+            );
+          if (photoOpt) {
+            photoOpt.click();
+            await sleep(800);
+            // Try file input injection
+            const fileInput = document.querySelector('input[type="file"][accept*="image"]') ||
+              document.querySelector('input[type="file"]');
+            if (fileInput) {
+              try {
+                // Strip data URL prefix to get raw base64
+                const commaIdx = (msg.imageData || '').indexOf(',');
+                const b64 = commaIdx >= 0 ? msg.imageData.slice(commaIdx + 1) : msg.imageData;
+                const binary = atob(b64);
+                const bytes = new Uint8Array(binary.length);
+                for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+                const blob = new Blob([bytes], { type: msg.imageMime || 'image/jpeg' });
+                const file = new File([blob], 'status.jpg', { type: blob.type });
+                const dt = new DataTransfer();
+                dt.items.add(file);
+                fileInput.files = dt.files;
+                fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+                await sleep(2000);
+                // Type caption if provided
+                if (msg.text) {
+                  const captionEl = document.querySelector('[data-testid="media-caption-input-container"] div[contenteditable], [contenteditable][data-tab="11"]');
+                  if (captionEl) {
+                    captionEl.focus();
+                    document.execCommand('insertText', false, msg.text);
+                    await sleep(500);
+                  }
+                }
+              } catch (injErr) {
+                // File injection failed — tell sidepanel to show manual instructions
+                return sendResponse({ success: false, manualRequired: true, error: injErr.message });
+              }
+            } else {
+              // No file input found after clicking photo option — manual step needed
+              return sendResponse({ success: false, manualRequired: true, error: 'File input not found' });
+            }
+          } else {
+            // Photo option not found in menu — WA Web UI changed; manual step needed
+            return sendResponse({ success: false, manualRequired: true, error: 'Photos and Videos option not found' });
+          }
+        } else {
+          // Text status: look for "Text" option
+          addBtn.click();
+          await sleep(800);
+          const textOpt =
+            document.querySelector('[data-testid="text-status-option"]') ||
+            Array.from(document.querySelectorAll('li, [role="menuitem"]')).find(el =>
+              el.textContent?.toLowerCase().includes('text')
+            );
+          if (textOpt) {
+            textOpt.click();
+            await sleep(800);
+          }
+          // Find text input for status
+          const textInput =
+            document.querySelector('[data-testid="status-text-input"]') ||
+            document.querySelector('[contenteditable][aria-placeholder]') ||
+            document.querySelector('[contenteditable]:not([data-tab="10"])');
+          if (textInput) {
+            textInput.focus();
+            document.execCommand('selectAll', false);
+            document.execCommand('insertText', false, msg.text || '');
+            await sleep(500);
+          }
+        }
+
+        // Find and click Send button
+        const sendBtn =
+          document.querySelector('[data-testid="status-send"]') ||
+          document.querySelector('[data-testid="compose-btn-send"]') ||
+          document.querySelector('[aria-label="Send"]');
+        if (sendBtn) {
+          sendBtn.click();
+          await sleep(800);
+          sendResponse({ success: true });
+        } else {
+          sendResponse({ success: false, error: 'Could not find Send button for status.' });
+        }
+      } catch (e) {
+        sendResponse({ success: false, error: e.message });
+      }
+    })();
+    return true;
+  }
+
+  // ── SEND_POLL (native WA poll) ──────────────────────────────────────────────
+  if (msg.type === 'SEND_POLL') {
+    (async () => {
+      try {
+        const attachBtn = findEl(SEL.attachBtn);
+        if (!attachBtn) return sendResponse({ success: false, error: 'Attach button not found' });
+        attachBtn.click();
+        await sleep(800);
+        // Look for Poll option in attach menu
+        const pollOpt =
+          document.querySelector('[data-testid="poll"]') ||
+          Array.from(document.querySelectorAll('li, [role="menuitem"]')).find(el =>
+            el.textContent?.toLowerCase().includes('poll')
+          );
+        if (!pollOpt) return sendResponse({ success: false, error: 'Poll option not found in attach menu' });
+        pollOpt.click();
+        await sleep(800);
+        // Fill poll question
+        const questionInput = document.querySelector('[data-testid="poll-question-input"], [placeholder*="Question"], [aria-label*="Question"]');
+        if (questionInput) {
+          questionInput.focus();
+          document.execCommand('selectAll', false);
+          document.execCommand('insertText', false, msg.pollQuestion || 'Quick question:');
+          await sleep(300);
+        }
+        // Fill options
+        const options = msg.pollOptions || [];
+        for (let i = 0; i < options.length; i++) {
+          const optInputs = document.querySelectorAll('[data-testid^="poll-option-"], input[placeholder*="Option"], [aria-label*="Option"]');
+          if (optInputs[i]) {
+            optInputs[i].focus();
+            document.execCommand('selectAll', false);
+            document.execCommand('insertText', false, options[i]);
+            await sleep(200);
+          }
+        }
+        // Send poll
+        const pollSend = document.querySelector('[data-testid="send-poll"], button[aria-label="Send"]');
+        if (pollSend) { pollSend.click(); await sleep(500); }
+        sendResponse({ success: true });
+      } catch (e) {
+        sendResponse({ success: false, error: e.message });
+      }
+    })();
+    return true;
+  }
 });
 
 // ─── Pinned Chats Bar (injected into WhatsApp Web left panel) ─────────────────
@@ -5832,6 +6369,9 @@ function _findIntroSection() {
 }
 
 function initTaskPanel() {
+  // Disabled: user requested removal of right-side Tasks section.
+  _removeTaskPanel();
+  return;
   if (document.getElementById(TASK_PANEL_ID)) { renderTaskPanel(); return; }
   if (_isChatOpen()) return;
 
@@ -5903,13 +6443,8 @@ function _removeTaskPanel() {
 }
 
 function _syncTaskPanel() {
-  const chatOpen = _isChatOpen();
-  if (chatOpen) {
-    _removeTaskPanel();
-  } else if (!document.getElementById(TASK_PANEL_ID)) {
-    const sec = _findIntroSection();
-    if (sec) initTaskPanel();
-  }
+  // Disabled: keep Tasks panel removed.
+  _removeTaskPanel();
 }
 
 // ─── Single observer: pin header button + task panel ──────────────────────────
@@ -5922,16 +6457,11 @@ const _pinBarObserver = new MutationObserver(() => {
     _pinBtnLastChat = curChat;
     initPinHeaderBtn();
   }
-  // Task panel: remove when chat opens (state-change only)
+  // Tasks panel removed by request; keep removing if any stale node reappears.
   const chatOpenNow = _isChatOpen();
-  if (_lastChatOpenState !== chatOpenNow) {
-    _lastChatOpenState = chatOpenNow;
-    if (chatOpenNow) _removeTaskPanel();
-  }
-  // Continuously retry injection: no chat + intro section present + panel missing
-  if (!chatOpenNow && !document.getElementById(TASK_PANEL_ID)) {
-    const sec = _findIntroSection();
-    if (sec) initTaskPanel();
+  if (_lastChatOpenState !== chatOpenNow) _lastChatOpenState = chatOpenNow;
+  if (document.getElementById(TASK_PANEL_ID) || document.querySelector('[data-wa-task-hidden="1"]')) {
+    _removeTaskPanel();
   }
 });
 _pinBarObserver.observe(document.body, { childList: true, subtree: true });
@@ -5939,5 +6469,5 @@ _pinBarObserver.observe(document.body, { childList: true, subtree: true });
 // Live-sync: update pins, header button, and task list when storage changes
 chrome.storage.onChanged.addListener(changes => {
   if (changes.pinnedChats) { applyVirtualPins(); _updatePinHeaderBtn(); }
-  if (changes.waTasks)     { renderTaskPanel(); }
+  if (changes.waTasks)     { _removeTaskPanel(); }
 });

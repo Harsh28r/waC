@@ -20,6 +20,40 @@ async function appendNotificationFeed(entry) {
   }
 }
 
+// ─── Context Menu: right-click any phone number → Open on WhatsApp ───────────
+chrome.contextMenus.create({
+  id: 'wa-open-chat',
+  title: 'Send on WhatsApp',
+  contexts: ['selection']
+}, () => { void chrome.runtime.lastError; });
+
+chrome.contextMenus.create({
+  id: 'wa-copy-send',
+  title: 'WA Bulk AI: Quick Send to this number',
+  contexts: ['selection']
+}, () => { void chrome.runtime.lastError; });
+
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  if (info.menuItemId !== 'wa-open-chat' && info.menuItemId !== 'wa-copy-send') return;
+  const text = (info.selectionText || '').trim();
+  const digits = text.replace(/[\s\-\(\)\+\.]/g, '').replace(/[^0-9]/g, '');
+  if (!digits || digits.length < 7) {
+    chrome.notifications.create('wa-ctx-err', {
+      type: 'basic', iconUrl: 'icons/icon48.png',
+      title: 'WA Bulk AI — No Phone Number',
+      message: 'Select a phone number (e.g. +91 98765 43210) then right-click → Send on WhatsApp.'
+    });
+    return;
+  }
+  const tabs = await chrome.tabs.query({ url: 'https://web.whatsapp.com/*' });
+  if (tabs.length > 0) {
+    await chrome.tabs.update(tabs[0].id, { url: `https://web.whatsapp.com/send?phone=${digits}`, active: true });
+    chrome.windows.update(tabs[0].windowId, { focused: true }).catch(() => {});
+  } else {
+    await chrome.tabs.create({ url: `https://web.whatsapp.com/send?phone=${digits}`, active: true });
+  }
+});
+
 // ─── Keepalive + Birthday Alarms ──────────────────────────────────────────────
 chrome.alarms.create('keepalive', { periodInMinutes: 0.4 });
 
@@ -77,6 +111,11 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 
   if (alarm.name.startsWith('task-')) {
     handleTaskAlarm(alarm.name).catch(console.error);
+  }
+
+  if (alarm.name.startsWith('smart-fu-')) {
+    const id = alarm.name.replace('smart-fu-', '');
+    executeSmartFollowup(id).catch(console.error);
   }
 
   if (alarm.name.startsWith('followup-')) {
@@ -381,6 +420,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     SET_TASK_ALARM:         () => setTaskAlarm(msg.data),
     CANCEL_TASK_ALARM:      () => cancelTaskAlarm(msg.data),
     GET_STAGED_MEDIA:       () => getStagedMediaPayload(msg.data?.key),
+    // Smart follow-ups
+    SAVE_SMART_FOLLOWUP:    () => saveSmartFollowup(msg.data),
+    GET_SMART_FOLLOWUPS:    () => getSmartFollowups(),
+    DELETE_SMART_FOLLOWUP:  () => deleteSmartFollowup(msg.data),
+    // Chat export
+    EXPORT_CHAT_CSV:        () => exportChatCSV(msg.data),
+    // Status poster
+    POST_WA_STATUS:         () => postWaStatus(msg.data),
   };
 
   if (async_handlers[msg.type]) {
@@ -1871,6 +1918,132 @@ async function getNotificationFeed() {
 async function clearNotificationFeed() {
   await chrome.storage.local.set({ [NOTIFICATION_FEED_KEY]: [] });
   return { success: true };
+}
+
+// ─── Smart Follow-up Sequences ────────────────────────────────────────────────
+/** Rule: { id, name, contacts:[{phone,name}], delayDays, message, condition:'no_reply'|'always', createdAt, status:'active'|'done' } */
+async function saveSmartFollowup(rule) {
+  const denied = await denyIfUnlicensed();
+  if (denied) return { success: false, error: denied };
+  if (!rule || !rule.contacts?.length || !rule.message || !rule.delayDays) {
+    return { success: false, error: 'Missing required fields (contacts, message, delayDays)' };
+  }
+  const id = rule.id || ('sfu-' + Date.now());
+  rule.id = id;
+  rule.createdAt = rule.createdAt || Date.now();
+  rule.status = 'active';
+
+  const stored = await chrome.storage.local.get('smartFollowups');
+  const rules = stored.smartFollowups || [];
+  const idx = rules.findIndex(r => r.id === id);
+  if (idx >= 0) rules[idx] = rule; else rules.push(rule);
+  await chrome.storage.local.set({ smartFollowups: rules });
+
+  // Schedule alarm: fire after delayDays from now
+  const when = Date.now() + rule.delayDays * 24 * 60 * 60 * 1000;
+  chrome.alarms.create(`smart-fu-${id}`, { when });
+  console.log('[WA] Smart follow-up scheduled:', rule.name, 'in', rule.delayDays, 'days');
+  return { success: true, id };
+}
+
+async function getSmartFollowups() {
+  const stored = await chrome.storage.local.get('smartFollowups');
+  return { success: true, rules: stored.smartFollowups || [] };
+}
+
+async function deleteSmartFollowup({ id }) {
+  chrome.alarms.clear(`smart-fu-${id}`);
+  const stored = await chrome.storage.local.get('smartFollowups');
+  const rules = (stored.smartFollowups || []).filter(r => r.id !== id);
+  await chrome.storage.local.set({ smartFollowups: rules });
+  return { success: true };
+}
+
+async function executeSmartFollowup(id) {
+  const denied = await denyIfUnlicensed();
+  if (denied) { console.warn('[WA] Smart follow-up skipped:', denied); return; }
+
+  const stored = await chrome.storage.local.get(['smartFollowups', 'replies']);
+  const rules = stored.smartFollowups || [];
+  const rule = rules.find(r => r.id === id);
+  if (!rule || rule.status !== 'active') return;
+
+  const repliedPhones = new Set((stored.replies || []).map(r => (r.phone || '').replace(/[^0-9]/g, '')));
+
+  const tabId = await findOrCreateWATab();
+  await sleep(2000);
+  let sent = 0;
+
+  for (const contact of (rule.contacts || [])) {
+    const phoneClean = (contact.phone || '').replace(/[^0-9]/g, '');
+    if (!phoneClean) continue;
+    // Condition: skip if they already replied (no_reply mode)
+    if (rule.condition === 'no_reply' && repliedPhones.has(phoneClean)) {
+      console.log('[WA] Smart FU: skipping', phoneClean, '(already replied)');
+      continue;
+    }
+    const msg = (rule.message || '').replace(/\{name\}/gi, contact.name || contact.phone);
+    await sendWhatsAppMessage(tabId, phoneClean, msg);
+    sent++;
+    await sleep(3000);
+  }
+
+  // Mark as done
+  const idx = rules.findIndex(r => r.id === id);
+  if (idx >= 0) { rules[idx].status = 'done'; rules[idx].sentCount = sent; rules[idx].executedAt = Date.now(); }
+  await chrome.storage.local.set({ smartFollowups: rules });
+
+  chrome.notifications.create(`smart-fu-done-${id}`, {
+    type: 'basic', iconUrl: 'icons/icon48.png',
+    title: 'Smart Follow-up Done — WA Bulk AI',
+    message: `Sent ${sent} follow-up messages for "${rule.name || 'Follow-up'}"`
+  });
+  console.log('[WA] Smart follow-up executed:', id, 'sent:', sent);
+}
+
+// ─── Chat Export ──────────────────────────────────────────────────────────────
+async function exportChatCSV({ phone, name }) {
+  const denied = await denyIfUnlicensed();
+  if (denied) return { success: false, error: denied };
+  const phoneClean = (phone || '').replace(/[^0-9]/g, '');
+  if (!phoneClean) return { success: false, error: 'Invalid phone' };
+
+  const tabId = await findOrCreateWATab();
+  await chrome.tabs.update(tabId, { url: `https://web.whatsapp.com/send?phone=${phoneClean}`, active: true });
+  await waitForTabLoad(tabId);
+  await sleep(4000);
+
+  const res = await sendMessageToTab(tabId, { type: 'READ_CHAT_MESSAGES', limit: 200 }, 4);
+  if (!res || !res.messages) return { success: false, error: 'Could not read chat messages' };
+
+  const header = 'Time,From,Message\n';
+  const rows = res.messages.map(m => {
+    const time = m.time || '';
+    const from = m.from === 'me' ? (name || 'Me') : (name || phone);
+    const msg = (m.text || '').replace(/"/g, '""');
+    return `"${time}","${from}","${msg}"`;
+  }).join('\n');
+
+  return { success: true, csv: header + rows, count: res.messages.length };
+}
+
+// ─── WhatsApp Status Poster ───────────────────────────────────────────────────
+async function postWaStatus({ text, imageDataUrl, imageMime }) {
+  const denied = await denyIfUnlicensed();
+  if (denied) return { success: false, error: denied };
+  if (!text && !imageDataUrl) return { success: false, error: 'Provide text or image for status' };
+
+  const tabId = await findOrCreateWATab();
+  await chrome.tabs.update(tabId, { active: true });
+  await sleep(1500);
+
+  const res = await sendMessageToTab(tabId, {
+    type: 'POST_WA_STATUS',
+    text: text || '',
+    imageData: imageDataUrl || null,   // full data URL (data:image/...;base64,...)
+    imageMime: imageMime || 'image/jpeg'
+  }, 5);
+  return res || { success: false, error: 'No response from WA page' };
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

@@ -613,3 +613,111 @@ code{background:#21262d;padding:1px 5px;border-radius:3px;font-family:'SF Mono',
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:#30363d;border-radius:4px}
 ::-webkit-scrollbar-thumb:hover{background:#484f58}
+
+/* ══════════════════════════════════════════════════════════════════
+   NEW FEATURE STYLES
+   ══════════════════════════════════════════════════════════════════ */
+
+/* ── Light Mode ──────────────────────────────────────────────────── */
+body.theme-light{background:#f6f8fa;color:#1f2328}
+body.theme-light .header,body.theme-light .tab-bar{background:#ffffff;border-color:#d0d7de}
+body.theme-light .tab{color:#57606a}
+body.theme-light .tab.active{color:#25D366;border-bottom-color:#25D366}
+body.theme-light .panel{background:#f6f8fa}
+body.theme-light .card{background:#ffffff;border-color:#d0d7de}
+body.theme-light .input,.theme-light textarea{background:#ffffff;border-color:#d0d7de;color:#1f2328}
+body.theme-light .input:focus,.theme-light textarea:focus{border-color:#0969da}
+body.theme-light .section-title{color:#1f2328}
+body.theme-light .section-badge{background:#f0f3f6;border-color:#d0d7de;color:#1f2328}
+body.theme-light .hint{color:#57606a}
+body.theme-light .muted-text{color:#57606a}
+body.theme-light .label{color:#57606a}
+body.theme-light .btn-outline{border-color:#d0d7de;color:#1f2328;background:#fff}
+body.theme-light .btn-outline:hover{background:#f0f3f6}
+body.theme-light .plan-pill{background:#f0f3f6;color:#57606a}
+body.theme-light .status-pill{background:#f0f3f6;border-color:#d0d7de;color:#57606a}
+body.theme-light .privacy-btn{border-color:#d0d7de;color:#57606a}
+body.theme-light .tab-bar{overflow-x:auto}
+body.theme-light .contact-card,.theme-light .pinned-chip{background:#fff;border-color:#d0d7de}
+body.theme-light .empty-state{color:#57606a}
+body.theme-light .license-gate-banner{background:#fff8c5;border-color:#d4a72c;color:#7d4e00}
+body.theme-light .report-overlay .report-card{background:#fff;color:#1f2328}
+body.theme-light .close-panel-btn{color:#57606a}
+body.theme-light .close-panel-btn:hover{background:#f0f3f6}
+body.theme-light .metrics-strip{background:#f0f3f6;border-color:#d0d7de}
+body.theme-light .metrics-item{color:#57606a}
+body.theme-light .controls{background:#fff;border-top:1px solid #d0d7de}
+
+/* ── Textarea Wrap (for emoji button positioning) ─────────────────── */
+.textarea-wrap{position:relative;display:flex;flex-direction:column}
+.textarea-wrap textarea{padding-right:36px}
+.emoji-trigger-btn{
+  position:absolute;bottom:6px;right:6px;
+  width:26px;height:26px;
+  background:none;border:1px solid #30363d;border-radius:6px;
+  font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;
+  color:#8b949e;transition:all .15s;line-height:1;padding:0;
+  z-index:2;
+}
+.emoji-trigger-btn:hover{border-color:#25D366;background:rgba(37,211,102,.08);color:#25D366}
+body.theme-light .emoji-trigger-btn{border-color:#d0d7de;color:#57606a}
+body.theme-light .emoji-trigger-btn:hover{border-color:#25D366}
+
+/* ── Emoji Picker ──────────────────────────────────────────────────── */
+.emoji-picker{
+  position:absolute;z-index:9999;
+  width:230px;background:#161b22;
+  border:1px solid #30363d;border-radius:10px;
+  box-shadow:0 8px 32px rgba(0,0,0,.4);
+  overflow:hidden;
+}
+.emoji-picker-search{padding:8px}
+.emoji-grid{
+  display:flex;flex-wrap:wrap;
+  padding:4px 8px 8px;
+  max-height:170px;overflow-y:auto;
+  gap:2px;
+}
+.emoji-item{
+  font-size:18px;cursor:pointer;padding:3px;
+  border-radius:4px;line-height:1;
+  transition:background .1s;
+}
+.emoji-item:hover{background:#21262d}
+body.theme-light .emoji-picker{background:#fff;border-color:#d0d7de;box-shadow:0 8px 32px rgba(0,0,0,.15)}
+body.theme-light .emoji-item:hover{background:#f0f3f6}
+
+/* ── Template Gallery ──────────────────────────────────────────────── */
+.tpl-gallery-card{
+  background:#161b22;border:1px solid #30363d;border-radius:8px;
+  padding:10px 12px;margin-bottom:8px;
+  transition:border-color .15s;
+}
+.tpl-gallery-card:hover{border-color:#25D366}
+.tpl-gallery-name{font-size:12px;font-weight:600;color:#c9d1d9}
+.tpl-gallery-preview{font-size:11px;color:#8b949e;margin-top:4px;line-height:1.5;white-space:pre-wrap}
+.tpl-cat-btn{margin-bottom:4px}
+.tpl-cat-btn.active{background:#1a3a2a;border-color:#25D366;color:#25D366}
+body.theme-light .tpl-gallery-card{background:#fff;border-color:#d0d7de}
+body.theme-light .tpl-gallery-card:hover{border-color:#25D366}
+body.theme-light .tpl-gallery-name{color:#1f2328}
+body.theme-light .tpl-gallery-preview{color:#57606a}
+
+/* ── Campaign Duplicate button ──────────────────────────────────────── */
+[data-db-dup]{color:#58a6ff;border-color:#1f4070}
+[data-db-dup]:hover{background:#132639;border-color:#58a6ff}
+
+/* ── Smart Follow-up ────────────────────────────────────────────────── */
+#smartfu-panel{margin-top:12px;padding-top:10px;border-top:1px solid #21262d}
+
+/* ── Status Poster ──────────────────────────────────────────────────── */
+#panel-status .card{margin-bottom:12px}
+
+/* ── Segment Blast ──────────────────────────────────────────────────── */
+#segblast-count{font-size:11px}
+
+/* ── btn-xs ─────────────────────────────────────────────────────────── */
+.btn-xs{font-size:10px;padding:3px 8px}
+
+/* ── Follow-up rule status chips ──────────────────────────────────── */
+.status-chip.pending{background:#2a2a1a;color:#d29922;border:1px solid #d2992240;border-radius:10px;padding:2px 6px;font-size:10px}

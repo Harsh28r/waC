@@ -3911,3 +3911,673 @@ document.getElementById('generateReportBtn').addEventListener('click', () => {
     });
   });
 });
+
+// ══════════════════════════════════════════════════════════════════
+// NEW FEATURES
+// ══════════════════════════════════════════════════════════════════
+
+// ─── Dark / Light Mode ────────────────────────────────────────────────────────
+{
+  const themeBtn = document.getElementById('themeBtn');
+  let isLight = false;
+
+  chrome.storage.local.get('themeLight', d => {
+    if (d.themeLight) applyTheme(true);
+  });
+
+  function applyTheme(light) {
+    isLight = light;
+    document.body.classList.toggle('theme-light', light);
+    if (themeBtn) themeBtn.textContent = light ? '🌙' : '☀️';
+    themeBtn && (themeBtn.title = light ? 'Switch to Dark Mode' : 'Switch to Light Mode');
+    chrome.storage.local.set({ themeLight: light });
+  }
+
+  themeBtn?.addEventListener('click', () => applyTheme(!isLight));
+}
+
+// ─── Emoji Picker ─────────────────────────────────────────────────────────────
+{
+  const EMOJIS = [
+    // Smileys
+    '😀','😃','😄','😁','😆','😅','😂','🤣','😊','😇','🙂','🙃','😉','😌','😍','🥰','😘','😗',
+    '😙','😚','😋','😛','😝','😜','🤪','🤨','🧐','🤓','😎','🥸','🤩','🥳','😏','😒','😞','😔',
+    '😟','😕','🙁','☹️','😣','😖','😫','😩','🥺','😢','😭','😤','😠','😡','🤬','🤯','😳','🥵',
+    '🥶','😱','😨','😰','😥','😓','🤗','🤔','🤭','🤫','🤥','😶','😐','😑','😬','🙄','😯','😦',
+    '😧','😮','😲','🥱','😴','🤤','😪','😵','🤐','🥴','🤢','🤮','🤧','😷','🤒','🤕','🤑','🤠',
+    // Hands & gestures
+    '👋','🤚','🖐','✋','🖖','👌','🤌','🤏','✌️','🤞','🤟','🤘','🤙','👈','👉','👆','🖕','👇',
+    '☝️','👍','👎','✊','👊','🤛','🤜','👏','🙌','👐','🤲','🙏','✍️','💅','🤳',
+    // Hearts
+    '❤️','🧡','💛','💚','💙','💜','🖤','🤍','🤎','💔','❣️','💕','💞','💓','💗','💖','💘','💝','💟',
+    // Business & work
+    '💼','📊','📈','📉','📋','📌','📍','📎','✂️','🗒️','🗓️','📅','📆','📇','🗃️','🗄️','🗑️',
+    '🔒','🔓','🔑','🗝️','🔨','⚒️','🛠️','🔧','🔩','⚙️','🖥️','💻','⌨️','🖱️','🖨️','📱','☎️',
+    // Money
+    '💰','💵','💴','💶','💷','💸','💳','💎','🏆','🎯','🏅','🥇',
+    // Communication
+    '📧','📨','📩','📤','📥','📦','📫','📪','📬','📭','📮','📯','📢','📣','🔔','🔕',
+    // Checkmarks & symbols
+    '✅','❌','⭕','🔴','🟠','🟡','🟢','🔵','🟣','⚫','⚪','🔶','🔷','🔸','🔹','▶️','⏭️',
+    '⏯️','⏹️','⏺️','⏏️','🔀','🔁','🔂','▪️','▫️','◾','◽','◼️','◻️','🟥','🟧','🟨','🟩','🟦',
+    // Plants & nature
+    '🌸','🌺','🌻','🌹','🌷','💐','🌼','🌱','🌿','☘️','🍀','🎋','🎍','🍃','🍂','🍁',
+    // Food
+    '🎂','🍰','🧁','🍫','🍬','🍭','🍮','🍯','🍩','🍪','☕','🍵','🧃','🥤','🧋','🍺','🥂',
+    // Travel
+    '✈️','🚀','🚗','🚕','🚙','🚌','🚎','🏎️','🚓','🚑','🚒','🚐','🛻','🛵','🏍️','🚲',
+    // Celebration
+    '🎉','🎊','🎈','🎁','🎀','🎗️','🎟️','🎫','🎆','🎇','✨','🌟','⭐','🌠','🎑',
+  ];
+
+  let _emojiTarget = null;
+  const picker = document.getElementById('emojiPicker');
+  const emojiGrid = document.getElementById('emojiGrid');
+  const emojiSearch = document.getElementById('emojiSearch');
+
+  function renderEmojiGrid(filter = '') {
+    const list = filter ? EMOJIS.filter(e => e.includes(filter)) : EMOJIS;
+    emojiGrid.innerHTML = list.map(e => `<span class="emoji-item" data-emoji="${e}">${e}</span>`).join('');
+    emojiGrid.querySelectorAll('.emoji-item').forEach(el => {
+      el.addEventListener('click', () => insertEmoji(el.dataset.emoji));
+    });
+  }
+
+  function insertEmoji(emoji) {
+    if (!_emojiTarget) return;
+    const ta = document.getElementById(_emojiTarget) || document.querySelector(`[data-emoji-for="${_emojiTarget}"]`);
+    const field = ta?.tagName === 'TEXTAREA' ? ta : document.getElementById(_emojiTarget);
+    if (!field) return;
+    const start = field.selectionStart ?? field.value.length;
+    const end = field.selectionEnd ?? field.value.length;
+    field.value = field.value.slice(0, start) + emoji + field.value.slice(end);
+    field.selectionStart = field.selectionEnd = start + emoji.length;
+    field.focus();
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  function openEmojiPicker(btn) {
+    _emojiTarget = btn.dataset.emojiFor;
+    const rect = btn.getBoundingClientRect();
+    const panelRect = document.querySelector('.app').getBoundingClientRect();
+    picker.style.display = 'block';
+    // Position above or below depending on space
+    const pickerH = 220;
+    const spaceBelow = panelRect.bottom - rect.bottom;
+    if (spaceBelow < pickerH + 10) {
+      picker.style.top = (rect.top - panelRect.top - pickerH - 4) + 'px';
+    } else {
+      picker.style.top = (rect.bottom - panelRect.top + 4) + 'px';
+    }
+    picker.style.left = Math.min(rect.left - panelRect.left, panelRect.width - 230) + 'px';
+    renderEmojiGrid(emojiSearch.value);
+    emojiSearch.focus();
+  }
+
+  document.addEventListener('click', e => {
+    const triggerBtn = e.target.closest('.emoji-trigger-btn');
+    if (triggerBtn) { e.stopPropagation(); openEmojiPicker(triggerBtn); return; }
+    if (!picker.contains(e.target)) picker.style.display = 'none';
+  });
+
+  emojiSearch?.addEventListener('input', () => renderEmojiGrid(emojiSearch.value));
+  renderEmojiGrid();
+}
+
+// ─── Tab handler for new tabs ─────────────────────────────────────────────────
+document.querySelectorAll('.tab').forEach(t => {
+  const existing = t._waNewListener;
+  if (existing) return;
+  t._waNewListener = true;
+  t.addEventListener('click', () => {
+    if (t.dataset.tab === 'status')   initStatusTab();
+    if (t.dataset.tab === 'smartfu')  loadSmartFollowups();
+  });
+});
+
+// ─── Template Gallery ─────────────────────────────────────────────────────────
+const BUILT_IN_TEMPLATES = [
+  { cat: 'sales', name: '🚀 Product Launch', text: 'Hi {name}! 🎉 Exciting news — we just launched something you\'ll love. Check it out: {link}\n\nLimited time offer — grab yours today! 🔥' },
+  { cat: 'sales', name: '💰 Special Discount', text: 'Hey {name}! 👋 We have an exclusive {discount}% discount just for you.\n\nUse code: {code}\nValid until: {expiry}\n\nDon\'t miss out! 🛒' },
+  { cat: 'sales', name: '🎯 Cold Outreach', text: 'Hi {name}, I came across your profile and think there\'s a great fit between what we do and what you need.\n\nWould love to share how we\'ve helped similar businesses. Got 10 minutes this week?' },
+  { cat: 'sales', name: '💼 Service Intro', text: 'Hello {name}! 😊 I\'m reaching out about our {service} service.\n\nWe help businesses like {company} achieve {benefit}. Would you be open to a quick call to learn more?' },
+  { cat: 'followup', name: '📩 First Follow-up', text: 'Hi {name}, just following up on my previous message. Did you get a chance to take a look?\n\nI\'d love to answer any questions you might have. 😊' },
+  { cat: 'followup', name: '⏰ No Reply Follow-up', text: 'Hey {name}! I know things get busy 😅\n\nJust wanted to check in one more time — we still have that offer available for you. Let me know if you\'d like more info!' },
+  { cat: 'followup', name: '🤝 Post-Meeting', text: 'Hi {name}, great speaking with you today! 🙌\n\nAs discussed, I\'ll send over the details shortly. Looking forward to working together!\n\nFeel free to reach out anytime.' },
+  { cat: 'followup', name: '🔔 Gentle Reminder', text: 'Hi {name}! 👋 This is a gentle reminder about {reminder}.\n\nPlease let us know if you need any assistance. We\'re here to help! 😊' },
+  { cat: 'support', name: '✅ Order Confirmed', text: 'Hi {name}! ✅ Your order #{order_id} has been confirmed.\n\nExpected delivery: {delivery_date}\nTracking: {tracking_link}\n\nThank you for shopping with us! 🙏' },
+  { cat: 'support', name: '🚚 Shipping Update', text: 'Hey {name}! 📦 Good news — your order is on its way!\n\nTracking number: {tracking}\nEstimated delivery: {date}\n\nTrack your order here: {link}' },
+  { cat: 'support', name: '🎂 Birthday Wishes', text: 'Happy Birthday {name}! 🎂🎉\n\nWishing you a wonderful day filled with joy and happiness! 🥳\n\nAs a birthday gift, here\'s a special {discount}% off just for you! 🎁' },
+  { cat: 'support', name: '⭐ Review Request', text: 'Hi {name}, hope you\'re enjoying your purchase! 😊\n\nWould you mind leaving us a quick review? It only takes a minute and means the world to us!\n\n👉 {review_link}\n\nThank you! 🙏' },
+  { cat: 'events', name: '📅 Event Invitation', text: 'Hi {name}! 🎉 You\'re invited to {event_name}!\n\n📅 Date: {date}\n⏰ Time: {time}\n📍 Venue: {venue}\n\nRSVP by: {rsvp_date}\nRegister here: {link}\n\nHope to see you there! 👋' },
+  { cat: 'events', name: '⏰ Event Reminder', text: 'Hi {name}! ⏰ Quick reminder — {event_name} is tomorrow!\n\n📅 {date} at {time}\n📍 {venue}\n\nLooking forward to seeing you! 🙌' },
+  { cat: 'events', name: '🎓 Webinar Invite', text: 'Hi {name}! 🎓 Join our FREE webinar on {topic}!\n\n📅 {date} at {time}\n💻 Online (link below)\n\nYou\'ll learn:\n✅ {point1}\n✅ {point2}\n✅ {point3}\n\nRegister free: {link}' },
+  { cat: 'events', name: '💳 Payment Reminder', text: 'Hi {name}, this is a friendly reminder that your payment of {amount} is due on {due_date}.\n\nPay securely here: {payment_link}\n\nPlease contact us if you have any questions. 🙏' },
+];
+
+{
+  let tplGalleryCat = 'all';
+
+  function renderTplGallery() {
+    const container = document.getElementById('tpl-gallery');
+    if (!container) return;
+    const filtered = tplGalleryCat === 'all'
+      ? BUILT_IN_TEMPLATES
+      : BUILT_IN_TEMPLATES.filter(t => t.cat === tplGalleryCat);
+    if (!filtered.length) { container.innerHTML = '<div class="empty-state">No templates in this category.</div>'; return; }
+    container.innerHTML = filtered.map((t, i) => `
+      <div class="tpl-gallery-card">
+        <div class="row justify-between align-center mb-4">
+          <span class="tpl-gallery-name">${esc(t.name)}</span>
+          <button class="btn btn-green btn-xs" data-tpl-idx="${BUILT_IN_TEMPLATES.indexOf(t)}">Use →</button>
+        </div>
+        <div class="tpl-gallery-preview">${esc(t.text.substring(0, 80))}${t.text.length > 80 ? '…' : ''}</div>
+      </div>
+    `).join('');
+
+    container.querySelectorAll('[data-tpl-idx]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const tpl = BUILT_IN_TEMPLATES[+btn.dataset.tplIdx];
+        if (!tpl) return;
+        const ta = document.getElementById('qs-message');
+        if (ta) { ta.value = tpl.text; ta.dispatchEvent(new Event('input')); }
+        showToast(`Template "${tpl.name}" loaded into message box`);
+        // Scroll to message box
+        document.querySelector('.tab[data-tab="sender"]')?.click();
+        setTimeout(() => ta?.scrollIntoView({ behavior: 'smooth' }), 100);
+      });
+    });
+  }
+
+  document.querySelectorAll('.tpl-cat-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      tplGalleryCat = btn.dataset.cat;
+      document.querySelectorAll('.tpl-cat-btn').forEach(b => b.classList.toggle('active', b === btn));
+      renderTplGallery();
+    });
+  });
+
+  // Render on sender tab open
+  document.querySelector('.tab[data-tab="sender"]')?.addEventListener('click', () => {
+    setTimeout(renderTplGallery, 50);
+  });
+  // Initial render if already on sender tab
+  renderTplGallery();
+}
+
+// ─── Campaign Duplicate ────────────────────────────────────────────────────────
+// Patches renderDashboard to add a Duplicate button on each campaign card
+const _origRenderDashboard = typeof renderDashboard === 'function' ? renderDashboard : null;
+function patchDashboardDuplicateButtons() {
+  const el = document.getElementById('dashboard-campaigns');
+  if (!el) return;
+  el.querySelectorAll('[data-db-dup]').forEach(btn => {
+    if (btn._dupPatched) return;
+    btn._dupPatched = true;
+    btn.addEventListener('click', () => {
+      const ts = +btn.dataset.dbDup;
+      chrome.runtime.sendMessage({ type: 'GET_ANALYTICS' }, r => {
+        const campaign = (r?.analytics?.campaigns || []).find(c => c.ts === ts);
+        if (!campaign) return showToast('Campaign not found', 'err');
+        // Load into compose tab
+        if (campaign.templatePreview) {
+          const ta = document.getElementById('msgTemplate');
+          if (ta) ta.value = campaign.templatePreview.replace(/…$/, '');
+        }
+        if (campaign.name) {
+          const nameEl = document.getElementById('campaignName');
+          if (nameEl) nameEl.value = campaign.name + ' (copy)';
+        }
+        document.querySelector('.tab[data-tab="compose"]')?.click();
+        showToast('Campaign loaded into Compose tab');
+      });
+    });
+  });
+}
+
+// Override renderDashboard to inject duplicate buttons
+{
+  const _origRD = window.renderDashboard;
+  if (typeof _origRD === 'function') {
+    window.renderDashboard = function(...args) {
+      _origRD.apply(this, args);
+      setTimeout(patchDashboardDuplicateButtons, 50);
+    };
+  }
+}
+
+// Also intercept dashboard campaign rendering to add Duplicate button
+// We patch the dashboard HTML generation by observing when campaigns render
+const _dbObserver = new MutationObserver(() => {
+  document.querySelectorAll('.dashboard-card').forEach(card => {
+    if (card.querySelector('[data-db-dup]') || card.querySelector('[data-db-del]') === null) return;
+    const delBtn = card.querySelector('[data-db-del]');
+    if (!delBtn) return;
+    const ts = delBtn.dataset.dbDel;
+    if (!ts || card.dataset.dupAdded) return;
+    card.dataset.dupAdded = '1';
+    const dupBtn = document.createElement('button');
+    dupBtn.className = 'btn btn-outline btn-sm';
+    dupBtn.dataset.dbDup = ts;
+    dupBtn.textContent = '⎘ Duplicate';
+    dupBtn.style.cssText = 'font-size:10px;padding:3px 8px;margin-left:6px;flex-shrink:0';
+    delBtn.insertAdjacentElement('afterend', dupBtn);
+    dupBtn.addEventListener('click', () => {
+      chrome.runtime.sendMessage({ type: 'GET_ANALYTICS' }, r => {
+        const camp = (r?.analytics?.campaigns || []).find(c => c.ts === +ts);
+        if (!camp) return showToast('Campaign not found', 'err');
+        if (camp.templatePreview) {
+          const ta = document.getElementById('msgTemplate');
+          if (ta) { ta.value = camp.templatePreview.replace(/…$/, ''); ta.dispatchEvent(new Event('input')); }
+        }
+        if (camp.name) {
+          const nameEl = document.getElementById('campaignName');
+          if (nameEl) nameEl.value = camp.name + ' (copy)';
+        }
+        document.querySelector('.tab[data-tab="compose"]')?.click();
+        showToast('Campaign loaded into Compose — edit and resend!');
+      });
+    });
+  });
+});
+_dbObserver.observe(document.getElementById('dashboard-campaigns') || document.body, { childList: true, subtree: true });
+
+// ─── Segment Blast ────────────────────────────────────────────────────────────
+function refreshSegblastUI() {
+  const segSel = document.getElementById('segblast-seg');
+  const countEl = document.getElementById('segblast-count');
+  if (!segSel) return;
+  chrome.storage.local.get('segments', d => {
+    const segs = d.segments || [];
+    segSel.innerHTML = '<option value="">Select a segment...</option>' +
+      segs.map(s => `<option value="${esc(s.name)}">${esc(s.name)}</option>`).join('');
+  });
+  // Also populate chat export contact picker
+  const exportSel = document.getElementById('chatexport-contact');
+  if (exportSel) {
+    exportSel.innerHTML = '<option value="">Select a contact...</option>' +
+      contacts.map(c => `<option value="${esc(c.phone)}">${esc(c.name || c.phone)}</option>`).join('');
+  }
+}
+
+document.querySelector('.tab[data-tab="contacts"]')?.addEventListener('click', () => setTimeout(refreshSegblastUI, 100));
+
+// Update segment blast count when segment changes
+document.getElementById('segblast-seg')?.addEventListener('change', () => {
+  const segName = document.getElementById('segblast-seg')?.value;
+  const countEl = document.getElementById('segblast-count');
+  if (!segName) { if (countEl) countEl.textContent = '0 contacts in segment'; return; }
+  chrome.storage.local.get(['segments', 'contacts'], d => {
+    const seg = (d.segments || []).find(s => s.name === segName);
+    if (!seg) return;
+    const allC = d.contacts || [];
+    const matched = allC.filter(c => applySegmentFilter([c], seg).length > 0);
+    if (countEl) countEl.textContent = `${matched.length} contacts in segment`;
+  });
+});
+
+document.getElementById('segblast-sendBtn')?.addEventListener('click', async () => {
+  const lic = await new Promise(r => chrome.runtime.sendMessage({ type: 'GET_LICENSE' }, r));
+  if (!lic?.canUsePro) {
+    const gate = await ensureActivatedLicense();
+    if (!gate.ok) return showToast(gate.message, 'err');
+  }
+
+  const segName = document.getElementById('segblast-seg')?.value;
+  const msg = document.getElementById('segblast-msg')?.value?.trim();
+  const resultEl = document.getElementById('segblast-result');
+
+  if (!segName) { resultEl.textContent = '⚠️ Select a segment first.'; resultEl.style.color = '#f85149'; resultEl.style.display = 'block'; return; }
+  if (!msg) { resultEl.textContent = '⚠️ Enter a message.'; resultEl.style.color = '#f85149'; resultEl.style.display = 'block'; return; }
+
+  chrome.storage.local.get(['segments', 'contacts'], async d => {
+    const seg = (d.segments || []).find(s => s.name === segName);
+    const allC = d.contacts || [];
+    const segContacts = seg ? allC.filter(c => applySegmentFilter([c], seg).length > 0) : [];
+    if (!segContacts.length) {
+      resultEl.textContent = '⚠️ No contacts in this segment.';
+      resultEl.style.color = '#f85149';
+      resultEl.style.display = 'block';
+      return;
+    }
+    resultEl.textContent = `⏳ Sending to ${segContacts.length} contacts...`;
+    resultEl.style.color = '#d29922';
+    resultEl.style.display = 'block';
+
+    // Kick off a campaign via the existing START_CAMPAIGN path
+    const campaignData = {
+      contacts: segContacts,
+      template: msg,
+      settings: { ...settings, campaignName: `Segment Blast: ${segName}`, aiEnabled: false },
+      abEnabled: false
+    };
+    chrome.runtime.sendMessage({ type: 'START_CAMPAIGN', data: campaignData }, res => {
+      if (res?.success) {
+        resultEl.textContent = `✅ Blast started for ${segContacts.length} contacts!`;
+        resultEl.style.color = '#25D366';
+        showToast(`Segment blast started — ${segContacts.length} contacts`);
+      } else {
+        resultEl.textContent = `❌ ${res?.error || 'Failed to start'}`;
+        resultEl.style.color = '#f85149';
+      }
+    });
+  });
+});
+
+// ─── Chat Export ──────────────────────────────────────────────────────────────
+document.getElementById('chatexport-btn')?.addEventListener('click', async () => {
+  const lic = await new Promise(r => chrome.runtime.sendMessage({ type: 'GET_LICENSE' }, r));
+  if (!lic?.canUsePro) {
+    const gate = await ensureActivatedLicense();
+    if (!gate.ok) return showToast(gate.message, 'err');
+  }
+
+  const sel = document.getElementById('chatexport-contact');
+  const phone = sel?.value;
+  const resultEl = document.getElementById('chatexport-result');
+
+  if (!phone) { resultEl.textContent = '⚠️ Select a contact first.'; resultEl.style.color = '#f85149'; resultEl.style.display = 'block'; return; }
+
+  const contact = contacts.find(c => c.phone === phone);
+  resultEl.textContent = '⏳ Opening chat and reading messages...';
+  resultEl.style.color = '#d29922';
+  resultEl.style.display = 'block';
+
+  const res = await chrome.runtime.sendMessage({ type: 'EXPORT_CHAT_CSV', data: { phone, name: contact?.name || phone } });
+  if (!res?.success) {
+    resultEl.textContent = `❌ ${res?.error || 'Failed to export chat'}`;
+    resultEl.style.color = '#f85149';
+    return;
+  }
+  // Download CSV
+  const blob = new Blob([res.csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `chat_${(contact?.name || phone).replace(/\s+/g, '_')}_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+  resultEl.textContent = `✅ Exported ${res.count} messages to CSV!`;
+  resultEl.style.color = '#25D366';
+  showToast(`Chat exported — ${res.count} messages`);
+});
+
+// ─── Status Poster Tab ────────────────────────────────────────────────────────
+let _statusImageData = null, _statusImageMime = 'image/jpeg', _statusImageName = 'status.jpg';
+
+// Wire up image picker immediately — elements exist in DOM from load
+(function setupStatusImagePicker() {
+  const pickBtn  = document.getElementById('status-imagePickBtn');
+  const fileInput = document.getElementById('status-imageFile');
+  const clearBtn  = document.getElementById('status-imageClearBtn');
+  const preview   = document.getElementById('status-imagePreview');
+  const previewImg = document.getElementById('status-previewImg');
+  const fileNameEl = document.getElementById('status-imageFileName');
+  if (!pickBtn || !fileInput) return;
+
+  pickBtn.addEventListener('click', () => fileInput.click());
+
+  fileInput.addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    _statusImageMime = file.type || 'image/jpeg';
+    _statusImageName = file.name || 'status.jpg';
+    const reader = new FileReader();
+    reader.onload = ev => {
+      _statusImageData = ev.target.result;          // full data URL  data:image/..;base64,XXX
+      if (fileNameEl) fileNameEl.textContent = file.name;
+      if (previewImg) previewImg.src = _statusImageData;
+      if (preview)   preview.style.display   = 'block';
+      if (clearBtn)  clearBtn.style.display  = 'inline-block';
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  });
+
+  clearBtn?.addEventListener('click', () => {
+    _statusImageData = null;
+    if (fileNameEl) fileNameEl.textContent = 'No file chosen';
+    if (preview)   preview.style.display  = 'none';
+    if (clearBtn)  clearBtn.style.display = 'none';
+    if (previewImg) previewImg.src = '';
+  });
+
+  const textArea = document.getElementById('status-text');
+  const charCount = document.getElementById('status-charcount');
+  textArea?.addEventListener('input', () => {
+    if (charCount) charCount.textContent = `${textArea.value.length} / 700`;
+  });
+})();
+
+function initStatusTab() { /* already wired above — kept for tab-click compat */ }
+
+async function postStatus(text, imageDataUrl, imageMime, imageName) {
+  const lic = await new Promise(r => chrome.runtime.sendMessage({ type: 'GET_LICENSE' }, r));
+  if (!lic?.canUsePro) {
+    const gate = await ensureActivatedLicense();
+    if (!gate.ok) { showToast(gate.message, 'err'); return null; }
+  }
+  return chrome.runtime.sendMessage({
+    type: 'POST_WA_STATUS',
+    data: { text: text || '', imageDataUrl: imageDataUrl || null, imageMime: imageMime || 'image/jpeg', imageName: imageName || 'status.jpg' }
+  });
+}
+
+document.getElementById('status-postTextBtn')?.addEventListener('click', async () => {
+  const text = document.getElementById('status-text')?.value?.trim();
+  const resultEl = document.getElementById('status-result');
+  if (!text) { resultEl.textContent = '⚠️ Enter text for status.'; resultEl.style.color = '#f85149'; resultEl.style.display = 'block'; return; }
+  resultEl.textContent = '⏳ Posting status...';
+  resultEl.style.color = '#d29922';
+  resultEl.style.display = 'block';
+  const res = await postStatus(text, null, null, null);
+  if (res?.success) {
+    resultEl.textContent = '✅ Status posted!';
+    resultEl.style.color = '#25D366';
+    showToast('Status posted!');
+  } else {
+    resultEl.textContent = `❌ ${res?.error || 'Failed to post status'}`;
+    resultEl.style.color = '#f85149';
+  }
+});
+
+document.getElementById('status-postImageBtn')?.addEventListener('click', async () => {
+  const caption   = document.getElementById('status-caption')?.value?.trim() || '';
+  const resultEl  = document.getElementById('status-result');
+  if (!_statusImageData) {
+    resultEl.textContent = '⚠️ Choose an image first using "Choose Image".';
+    resultEl.style.color = '#f85149';
+    resultEl.style.display = 'block';
+    return;
+  }
+  resultEl.textContent = '⏳ Opening WhatsApp Status…';
+  resultEl.style.color = '#d29922';
+  resultEl.style.display = 'block';
+
+  // Pass the full data URL — background/content will handle file injection
+  const res = await postStatus(caption, _statusImageData, _statusImageMime, _statusImageName);
+  if (res?.success) {
+    resultEl.textContent = '✅ Image status posted!';
+    resultEl.style.color = '#25D366';
+    showToast('Image status posted!');
+  } else if (res?.manualRequired) {
+    // Content script opened WA Status tab but can't inject file — guide user
+    resultEl.innerHTML = `
+      <div style="color:#d29922;font-size:12px;line-height:1.6">
+        ⚠️ <strong>One manual step needed:</strong><br>
+        WhatsApp Web has opened the Status page. Click <strong>"Add to status"</strong>,
+        then choose <strong>"Photos and Videos"</strong>, and select the image
+        <strong>${esc(_statusImageName)}</strong> from your file picker.
+        ${caption ? `<br><br>Caption copied to clipboard: <em>"${esc(caption)}"</em>` : ''}
+      </div>`;
+    resultEl.style.display = 'block';
+    // Copy caption to clipboard so user can paste it
+    if (caption) {
+      try { await navigator.clipboard.writeText(caption); } catch (_) {}
+    }
+  } else {
+    resultEl.textContent = `❌ ${res?.error || 'Failed'}`;
+    resultEl.style.color = '#f85149';
+  }
+});
+
+document.getElementById('status-scheduleBtn')?.addEventListener('click', async () => {
+  const timeVal = document.getElementById('status-scheduleTime')?.value;
+  const resEl = document.getElementById('status-scheduleResult');
+  if (!timeVal) { resEl.textContent = '⚠️ Pick a date/time.'; resEl.style.color = '#f85149'; resEl.style.display = 'block'; return; }
+  const when = new Date(timeVal).getTime();
+  if (when <= Date.now()) { resEl.textContent = '⚠️ Time must be in the future.'; resEl.style.color = '#f85149'; resEl.style.display = 'block'; return; }
+  const text = document.getElementById('status-text')?.value?.trim() || '';
+  // Store scheduled status
+  const entry = { id: Date.now(), text, imageData: _statusImageData, imageMime: _statusImageMime, when };
+  chrome.storage.local.get('scheduledStatuses', d => {
+    const list = d.scheduledStatuses || [];
+    list.push(entry);
+    chrome.storage.local.set({ scheduledStatuses: list });
+  });
+  resEl.textContent = `✅ Scheduled for ${new Date(when).toLocaleString()}`;
+  resEl.style.color = '#25D366';
+  resEl.style.display = 'block';
+  showToast('Status scheduled!');
+});
+
+// ─── Smart Follow-ups Tab ─────────────────────────────────────────────────────
+function loadSmartFollowups() {
+  const listEl = document.getElementById('sfu-list');
+  // Populate segment selector
+  chrome.storage.local.get('segments', d => {
+    const sel = document.getElementById('sfu-segmentSel');
+    if (sel) {
+      sel.innerHTML = '<option value="">All contacts</option>' +
+        (d.segments || []).map(s => `<option value="${esc(s.name)}">${esc(s.name)}</option>`).join('');
+    }
+  });
+  // Update contact count
+  const countEl = document.getElementById('sfu-contactCount');
+  if (countEl) countEl.textContent = contacts.length;
+
+  chrome.runtime.sendMessage({ type: 'GET_SMART_FOLLOWUPS' }, res => {
+    if (!listEl) return;
+    const rules = res?.rules || [];
+    if (!rules.length) { listEl.innerHTML = '<div class="empty-state">No follow-up rules yet.</div>'; return; }
+    listEl.innerHTML = rules.map(r => `
+      <div class="card mb-8">
+        <div class="row justify-between align-center mb-4">
+          <div>
+            <div class="section-title">${esc(r.name || 'Follow-up Rule')}</div>
+            <div class="hint">${r.condition === 'no_reply' ? 'No reply' : 'Always'} after ${r.delayDays} day${r.delayDays !== 1 ? 's' : ''} · ${(r.contacts || []).length} contacts</div>
+          </div>
+          <div class="row gap-6">
+            <span class="status-chip ${r.status === 'done' ? 'sent' : 'pending'}" style="font-size:10px">${r.status === 'done' ? '✓ Done' : '⏳ Pending'}</span>
+            <button class="btn btn-danger btn-xs" data-sfu-del="${esc(r.id)}">✕</button>
+          </div>
+        </div>
+        <div class="hint" style="font-style:italic">"${esc((r.message || '').substring(0, 60))}${(r.message||'').length > 60 ? '…' : ''}"</div>
+        ${r.executedAt ? `<div class="hint mt-2">Sent: ${new Date(r.executedAt).toLocaleString()} · ${r.sentCount || 0} messages</div>` : ''}
+      </div>
+    `).join('');
+
+    listEl.querySelectorAll('[data-sfu-del]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        chrome.runtime.sendMessage({ type: 'DELETE_SMART_FOLLOWUP', data: { id: btn.dataset.sfuDel } }, () => {
+          showToast('Follow-up rule deleted');
+          loadSmartFollowups();
+        });
+      });
+    });
+  });
+}
+
+document.getElementById('sfu-useSegment')?.addEventListener('change', e => {
+  const sel = document.getElementById('sfu-segmentSel');
+  if (sel) sel.style.display = e.target.checked ? 'block' : 'none';
+});
+
+document.getElementById('sfu-saveBtn')?.addEventListener('click', async () => {
+  const lic = await new Promise(r => chrome.runtime.sendMessage({ type: 'GET_LICENSE' }, r));
+  if (!lic?.canUsePro) {
+    const gate = await ensureActivatedLicense();
+    if (!gate.ok) return showToast(gate.message, 'err');
+  }
+
+  const name = document.getElementById('sfu-name')?.value?.trim() || 'Follow-up Rule';
+  const condition = document.getElementById('sfu-condition')?.value || 'no_reply';
+  const days = parseInt(document.getElementById('sfu-days')?.value, 10) || 3;
+  const msg = document.getElementById('sfu-message')?.value?.trim();
+  const useSegment = document.getElementById('sfu-useSegment')?.checked;
+  const segName = document.getElementById('sfu-segmentSel')?.value;
+  const resultEl = document.getElementById('sfu-saveResult');
+
+  if (!msg) { resultEl.textContent = '⚠️ Enter a follow-up message.'; resultEl.style.color = '#f85149'; resultEl.style.display = 'block'; return; }
+
+  let targetContacts = [...contacts];
+  if (useSegment && segName) {
+    chrome.storage.local.get('segments', d => {
+      const seg = (d.segments || []).find(s => s.name === segName);
+      if (seg) targetContacts = contacts.filter(c => applySegmentFilter([c], seg).length > 0);
+    });
+  }
+
+  if (!targetContacts.length) {
+    resultEl.textContent = '⚠️ No contacts to target.';
+    resultEl.style.color = '#f85149';
+    resultEl.style.display = 'block';
+    return;
+  }
+
+  const rule = {
+    name, condition, delayDays: days, message: msg,
+    contacts: targetContacts.map(c => ({ phone: c.phone, name: c.name || c.phone }))
+  };
+
+  const res = await chrome.runtime.sendMessage({ type: 'SAVE_SMART_FOLLOWUP', data: rule });
+  if (res?.success) {
+    resultEl.textContent = `✅ Follow-up rule saved! Will fire in ${days} day${days !== 1 ? 's' : ''} for ${targetContacts.length} contacts.`;
+    resultEl.style.color = '#25D366';
+    resultEl.style.display = 'block';
+    showToast('Smart follow-up saved');
+    document.getElementById('sfu-name').value = '';
+    document.getElementById('sfu-message').value = '';
+    loadSmartFollowups();
+  } else {
+    resultEl.textContent = `❌ ${res?.error || 'Failed'}`;
+    resultEl.style.color = '#f85149';
+    resultEl.style.display = 'block';
+  }
+});
+
+// Smart follow-up in Compose tab
+document.getElementById('smartfu-enabled')?.addEventListener('change', e => {
+  const panel = document.getElementById('smartfu-panel');
+  if (panel) panel.style.display = e.target.checked ? 'block' : 'none';
+});
+
+// Hook into START_CAMPAIGN to schedule smart follow-up if enabled
+const _origStartBtn = document.getElementById('startBtn');
+if (_origStartBtn) {
+  _origStartBtn.addEventListener('click', () => {
+    setTimeout(async () => {
+      const sfuEnabled = document.getElementById('smartfu-enabled')?.checked;
+      if (!sfuEnabled || !contacts.length) return;
+      const msg = document.getElementById('smartfu-msg')?.value?.trim();
+      if (!msg) return;
+      const condition = document.getElementById('smartfu-condition')?.value || 'no_reply';
+      const days = parseInt(document.getElementById('smartfu-days')?.value, 10) || 3;
+      const campName = document.getElementById('campaignName')?.value || 'Campaign';
+      const rule = {
+        name: `${campName} Follow-up`,
+        condition, delayDays: days, message: msg,
+        contacts: contacts.map(c => ({ phone: c.phone, name: c.name || c.phone }))
+      };
+      const res = await chrome.runtime.sendMessage({ type: 'SAVE_SMART_FOLLOWUP', data: rule });
+      if (res?.success) showToast(`Smart follow-up scheduled in ${days} days`);
+    }, 500);
+  }, { once: false });
+}
+
+// Also populate dropdowns when contacts change
+function refreshNewFeatureDropdowns() {
+  refreshSegblastUI();
+  const sfuCount = document.getElementById('sfu-contactCount');
+  if (sfuCount) sfuCount.textContent = contacts.length;
+}

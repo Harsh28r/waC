@@ -11,7 +11,8 @@
     "tabs",
     "activeTab",
     "alarms",
-    "notifications"
+    "notifications",
+    "contextMenus"
   ],
   "host_permissions": [
     "https://web.whatsapp.com/*",
